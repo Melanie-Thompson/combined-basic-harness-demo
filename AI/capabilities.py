@@ -10,7 +10,10 @@ import logging
 import os
 from collections.abc import Callable
 
-import pydantic_monty as pm
+try:
+    import pydantic_monty as pm
+except ImportError:
+    pm = None  # type: ignore[assignment]
 
 from AI.tools.definition import Capability, ToolDefinition
 
