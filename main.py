@@ -13,15 +13,19 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
 
-import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import BaseMessage
+from pathlib import Path
 from pydantic import BaseModel
 
 from AI import redis_store, sessions
-from AI.benchmark import run_benchmark
+from AI.benchmark import run_benchmark, BenchmarkReport, TestResult, FAITHFULNESS_THRESHOLD
+from AI.comparison import run_inline_baseline, run_all_baselines
+from AI.embeddings import semantic_similarity
+from AI.faithfulness import check_faithfulness
+from AI.models.message import ToolExecutionRecord
 from AI.graph import stream_reply
 from AI.package_lifecycle import PackageManifest, PackageRegistry
 from AI.package_signing import PackageSignature
@@ -70,44 +74,41 @@ _SESSION_COOKIE = "harness_session"
 _pending_confirmations: dict[str, asyncio.Future] = {}
 
 
-API_SERVER = os.getenv("API_SERVER", "http://localhost:8003")
+def _load_packages_from_registry(harness_registry: PackageRegistry) -> int:
+    """Load packages from the bundled API registry into the harness registry."""
+    from api.registry import PackageRegistry as APIRegistry
+    from api.signing import KeyStore
 
+    key_store = KeyStore()
+    api_registry = APIRegistry(key_store=key_store)
+    count = api_registry.load_all()
+    if count == 0:
+        log.info("no packages found in bundled API registry")
+        return 0
 
-async def _fetch_packages_from_api(registry: PackageRegistry) -> int:
-    """Pull all packages from the API server and install them into the registry."""
-    import httpx
     installed = 0
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{API_SERVER}/packages")
-            resp.raise_for_status()
-            packages = resp.json().get("packages", [])
+    for pkg_info in api_registry.list_packages():
+        name = pkg_info["definition"]["name"]
+        manifest_data = api_registry.get_manifest(name)
+        if manifest_data is None:
+            continue
 
-            for pkg in packages:
-                name = pkg["definition"]["name"]
-                manifest_resp = await client.get(f"{API_SERVER}/packages/{name}")
-                manifest_resp.raise_for_status()
-                manifest_data = manifest_resp.json()
+        sig = None
+        if manifest_data.get("signature"):
+            sig = PackageSignature(**manifest_data["signature"])
 
-                sig = None
-                if manifest_data.get("signature"):
-                    sig = PackageSignature(**manifest_data["signature"])
-
-                manifest = PackageManifest(
-                    definition=manifest_data["definition"],
-                    source_code=manifest_data["source_code"],
-                    signature=sig,
-                    publisher=manifest_data.get("publisher", ""),
-                )
-                try:
-                    registry.install(manifest)
-                    installed += 1
-                    log.info("installed package '%s' from API", name)
-                except ValueError as e:
-                    log.warning("failed to install '%s' from API: %s", name, e)
-
-    except Exception as e:
-        log.warning("could not reach API server at %s: %s", API_SERVER, e)
+        manifest = PackageManifest(
+            definition=manifest_data["definition"],
+            source_code=manifest_data["source_code"],
+            signature=sig,
+            publisher=manifest_data.get("publisher", ""),
+        )
+        try:
+            harness_registry.install(manifest)
+            installed += 1
+            log.info("installed package '%s' from bundled registry", name)
+        except ValueError as e:
+            log.warning("failed to install '%s': %s", name, e)
 
     return installed
 
@@ -117,7 +118,7 @@ async def lifespan(_app: FastAPI):
     global _session_id, _registry
     await redis_store.connect()
     _registry = PackageRegistry()
-    installed = await _fetch_packages_from_api(_registry)
+    installed = _load_packages_from_registry(_registry)
     inspect_tools(registry=_registry)
     _session_id = sessions.new_session_id()
     log.info("session %s initialised (%d tools from API)", _session_id, installed)
@@ -133,13 +134,40 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://localhost:5500,http://127.0.0.1:3000,http://127.0.0.1:5500").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Mount bundled API sub-app ─────────────────────────────────────────────
+try:
+    from main_api import app as api_app
+    app.mount("/api", api_app)
+    log.info("mounted bundled API at /api")
+except ImportError:
+    log.info("no bundled API found — running standalone")
+
+# ── Serve frontend static files ───────────────────────────────────────────
+_frontend_dir = Path(__file__).parent / "frontend"
+if _frontend_dir.is_dir():
+    from fastapi.responses import FileResponse
+
+    @app.get("/")
+    async def serve_index():
+        return FileResponse(_frontend_dir / "index.html")
+
+    @app.get("/style.css")
+    async def serve_css():
+        return FileResponse(_frontend_dir / "style.css", media_type="text/css")
+
+    @app.get("/app.js")
+    async def serve_js():
+        return FileResponse(_frontend_dir / "app.js", media_type="application/javascript")
 
 
 def sse(payload: dict | str, event: str | None = None) -> str:
@@ -237,6 +265,11 @@ async def agent_chat(req: AgentChatRequest, request: Request):
         yield sse({"iteration": 1}, event="thinking")
 
         current_text = ""
+        actual_tool: str | None = None
+        actual_blocked = False
+        tool_output = ""
+        tool_args: dict | None = None
+        start_ms = time.monotonic()
 
         try:
             async for evt in stream_reply(
@@ -251,20 +284,61 @@ async def agent_chat(req: AgentChatRequest, request: Request):
                     yield sse({"token": evt["token"]}, event="token")
                     current_text += evt["token"]
                 elif evt_type == "tool_call":
+                    actual_tool = evt["tool"]
+                    tool_args = evt.get("args")
                     yield sse({"tool": evt["tool"], "args": evt["args"]}, event="tool_call")
                 elif evt_type == "tool_result":
+                    tool_output += evt.get("result", "") + "\n"
                     yield sse({"tool": evt["tool"], "result": evt["result"]}, event="tool_result")
                 elif evt_type == "tool_blocked":
+                    actual_blocked = True
+                    current_text = evt.get("reason", "")
                     yield sse({"reason": evt["reason"], "stage": "relevance", "tool": evt.get("tool", ""), "category": "irrelevant"}, event="blocked")
 
         except Exception as exc:
             log.exception("agent chat stream failed")
             yield sse({"error": str(exc)}, event="error")
 
+        latency_ms = (time.monotonic() - start_ms) * 1000
+
         if turn_messages:
             await sessions.save(conversation_id, history + turn_messages)
 
         yield sse({"text": current_text}, event="response")
+
+        try:
+            result = _score_query(
+                prompt=req.prompt,
+                actual_tool=actual_tool,
+                actual_blocked=actual_blocked,
+                response_text=current_text,
+                tool_output=tool_output,
+                tool_args=tool_args,
+                latency_ms=latency_ms,
+                baselines=[],
+            )
+            await _persist_eval()
+            yield sse(result.to_dict(), event="eval")
+        except Exception as exc:
+            log.exception("eval scoring failed")
+
+        async def _run_baseline_bg(prompt, tool_out, result_obj):
+            try:
+                from AI.graph import MODEL as AGENT_MODEL
+                baseline = await run_inline_baseline(prompt, AGENT_MODEL)
+                bd = baseline.to_dict()
+                if tool_out.strip() and bd["response_text"].strip():
+                    bd["faithfulness_score"] = round(
+                        semantic_similarity(tool_out.strip(), bd["response_text"].strip()), 3
+                    )
+                else:
+                    bd["faithfulness_score"] = None
+                result_obj.baselines = [bd]
+                await _persist_eval()
+            except Exception as exc:
+                log.warning("baseline comparison failed: %s", exc)
+
+        asyncio.create_task(_run_baseline_bg(req.prompt, tool_output, result))
 
     return StreamingResponse(
         events(),
@@ -330,12 +404,11 @@ async def log_stream(request: Request, catchup: int = 0):
 
 @app.get("/redis/keys")
 async def redis_keys():
+    if redis_store._redis is None:
+        return []
     try:
-        r = aioredis.from_url(
-            os.getenv("REDIS_URL", "redis://localhost:6379"),
-            decode_responses=True,
-        )
-        keys = await r.keys("*")
+        r = redis_store._redis
+        keys = await r.keys(f"*{_session_id}*")
         entries = []
         for key in sorted(keys):
             key_type = await r.type(key)
@@ -356,7 +429,6 @@ async def redis_keys():
                 "ttl": ttl if ttl > 0 else None,
                 "value": value,
             })
-        await r.aclose()
         return entries
     except Exception as e:
         return JSONResponse([{"db": "error", "key": str(e), "type": "error", "ttl": None, "value": None}])
@@ -644,52 +716,144 @@ async def run_tests() -> StreamingResponse:
     )
 
 
-# ── Benchmark ──────────────────────────────────────────────────────────────
+# ── Live eval (cumulative, scored on every query) ────────────────────────
 
-_latest_benchmark: dict | None = None
+_eval_report = BenchmarkReport()
 
 
-@app.post("/benchmark/run")
-async def benchmark_run():
-    """Run the benchmark suite and return results."""
-    global _latest_benchmark
-    report = await run_benchmark(
-        stream_reply,
-        registry=_registry,
-        session_id=_session_id,
+def _score_query(
+    prompt: str,
+    actual_tool: str | None,
+    actual_blocked: bool,
+    response_text: str,
+    tool_output: str,
+    tool_args: dict | None,
+    latency_ms: float,
+    baselines: list[dict] | None = None,
+) -> TestResult:
+    """Score a single live query and append to the cumulative report."""
+    has_output = bool(tool_output and tool_output.strip())
+    has_response = bool(response_text and response_text.strip())
+
+    faithfulness_score = 0.0
+    is_faithful = False
+    faithfulness_mismatches: list[str] = []
+
+    if has_output:
+        records = [
+            ToolExecutionRecord(
+                tool_call_id=f"live_{int(time.time() * 1000)}",
+                tool_name=actual_tool or "unknown",
+                tool_input=tool_args or {},
+                tool_output=tool_output,
+                signature="live_eval",
+            )
+        ]
+        faith_map = check_faithfulness(response_text, records)
+        faith_res = next(iter(faith_map.values()), None)
+        if faith_res is not None:
+            faithfulness_score = faith_res.semantic_score
+            is_faithful = faith_res.faithful
+            faithfulness_mismatches = faith_res.mismatches
+
+    failure_reasons: list[str] = []
+    if actual_blocked:
+        pass
+    else:
+        if actual_tool and not has_output:
+            failure_reasons.append("tool produced no output")
+        if not has_response:
+            failure_reasons.append("empty final response")
+        elif has_output and not is_faithful:
+            detail = ", ".join(faithfulness_mismatches) if faithfulness_mismatches else f"{faithfulness_score:.3f}"
+            failure_reasons.append(f"unfaithful: {detail}")
+
+    passed = len(failure_reasons) == 0
+    actual_tools = [actual_tool] if actual_tool else []
+
+    result = TestResult(
+        case_id=f"live_{int(time.time() * 1000)}",
+        prompt=prompt,
+        expected_tool=actual_tool,
+        expected_blocked=actual_blocked,
+        actual_tool=actual_tool,
+        actual_tools=actual_tools,
+        actual_blocked=actual_blocked,
+        response_text=response_text,
+        tool_output=tool_output,
+        tool_args=tool_args,
+        latency_ms=latency_ms,
+        passed=passed,
+        failure_reasons=failure_reasons,
+        faithfulness_score=faithfulness_score,
+        faithful=is_faithful,
+        faithfulness_mismatches=faithfulness_mismatches,
+        baselines=baselines or [],
     )
-    _latest_benchmark = report.to_dict()
 
-    # Store in Redis for persistence
+    _eval_report.record_result(result, k=1)
+    return result
+
+
+async def _persist_eval():
     try:
         assert redis_store._redis is not None
         await redis_store._redis.set(
-            f"benchmark:{_session_id}",
-            json.dumps(_latest_benchmark),
+            f"eval:{_session_id}",
+            json.dumps(_eval_report.to_dict()),
             ex=redis_store.SESSION_TTL,
         )
     except Exception:
         pass
 
-    return _latest_benchmark
 
-
-@app.get("/benchmark/results")
-async def benchmark_results():
-    """Get the latest benchmark results."""
-    if _latest_benchmark:
-        return _latest_benchmark
-
-    # Try Redis
+@app.get("/eval/results")
+async def eval_results():
+    """Get cumulative eval results from live queries."""
+    if _eval_report.total > 0:
+        return _eval_report.to_dict()
     try:
         assert redis_store._redis is not None
-        raw = await redis_store._redis.get(f"benchmark:{_session_id}")
+        raw = await redis_store._redis.get(f"eval:{_session_id}")
         if raw:
             return json.loads(raw)
     except Exception:
         pass
+    return {"total": 0, "results": []}
 
-    return {"error": "no benchmark results available — run POST /benchmark/run first"}
+
+@app.post("/eval/reset")
+async def eval_reset():
+    """Reset cumulative eval results."""
+    global _eval_report
+    _eval_report = BenchmarkReport(k_runs=1)
+    try:
+        assert redis_store._redis is not None
+        await redis_store._redis.delete(f"eval:{_session_id}")
+    except Exception:
+        pass
+    return {"reset": True}
+
+
+@app.post("/session/new")
+async def session_new():
+    """Create a fresh session — resets eval accumulator."""
+    global _session_id, _eval_report
+    _session_id = sessions.new_session_id()
+    _eval_report = BenchmarkReport(k_runs=1)
+    log.info("new session %s", _session_id)
+    return {"session_id": _session_id}
+
+
+@app.post("/benchmark/run")
+async def benchmark_run():
+    """Run the synthetic benchmark suite (batch eval)."""
+    report = await run_benchmark(
+        stream_reply,
+        registry=_registry,
+        session_id=_session_id,
+    )
+    return report.to_dict()
 
 
 # ── Context store ──────────────────────────────────────────────────────────

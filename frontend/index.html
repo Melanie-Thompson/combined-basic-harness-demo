@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Harness</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div class="app-body">
+    <!-- Redis Panel (left) -->
+    <aside id="redis-panel" class="redis-panel">
+      <div class="redis-panel-header">
+        <h3>// redis</h3>
+        <div class="redis-controls">
+          <button class="redis-refresh-btn" onclick="refreshRedisPanel()">Refresh</button>
+        </div>
+      </div>
+      <div id="redis-entries" class="redis-entries"></div>
+    </aside>
+
+    <!-- Main content area -->
+    <div class="main-content">
+      <!-- Login Screen -->
+      <div id="login-screen" class="screen active">
+        <div class="login-card">
+          <h1>Agent Harness</h1>
+          <p class="subtitle">// sign in with a one-time code</p>
+
+          <div id="email-step">
+            <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email">
+            <button id="send-code-btn" onclick="handleSendCode()">Send Code</button>
+          </div>
+
+          <div id="otp-step" class="hidden">
+            <div id="dev-otp-banner" class="dev-otp-banner hidden">
+              <span class="dev-otp-label">DEV CODE</span>
+              <input type="text" id="dev-otp-code" class="dev-otp-code" readonly>
+            </div>
+            <p class="otp-hint">Enter the 6-digit code sent to <span id="otp-email"></span></p>
+            <input type="text" id="otp-input" placeholder="000000" maxlength="6" inputmode="numeric" pattern="\d{6}">
+            <button id="verify-btn" onclick="handleVerify()">Verify</button>
+            <button class="link-btn" onclick="handleBackToEmail()">Use a different email</button>
+          </div>
+
+          <div id="login-error" class="error hidden"></div>
+          <div id="login-loading" class="loading hidden">
+            <span class="dot-pulse"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat Screen -->
+      <div id="chat-screen" class="screen">
+        <header class="chat-header">
+          <div class="header-left">
+            <h2>Agent Harness</h2>
+            <span id="user-email" class="user-badge"></span>
+          </div>
+          <div class="header-right">
+            <button class="logout-btn" onclick="handleLogout()">Log out</button>
+          </div>
+        </header>
+
+        <div class="chat-body">
+          <div class="chat-main">
+            <div id="message-list" class="message-list"></div>
+
+            <!-- Confirm Overlay -->
+            <div id="confirm-overlay" class="confirm-overlay hidden">
+              <div class="confirm-card">
+                <h3>Tool requires approval</h3>
+                <div id="confirm-tool-name" class="confirm-tool-name"></div>
+                <pre id="confirm-tool-args" class="confirm-args"></pre>
+                <div class="confirm-actions">
+                  <button class="btn-approve" onclick="handleApprove()">Approve</button>
+                  <button class="btn-deny" onclick="handleDeny()">Deny</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="chat-input-area">
+              <textarea id="chat-input" placeholder="Send a message..." rows="1" onkeydown="handleInputKeydown(event)"></textarea>
+              <button id="send-btn" onclick="handleSend()">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Eval Panel -->
+    <aside id="eval-panel" class="eval-panel">
+      <div class="eval-panel-header">
+        <h3>// live_eval</h3>
+        <div class="eval-controls">
+          <button id="bench-run-btn" class="bench-run-btn" onclick="triggerBenchmark()">Run</button>
+          <button id="bench-reset-btn" class="bench-reset-btn" onclick="resetEval()">Reset</button>
+          <span id="bench-status" class="bench-status"></span>
+        </div>
+      </div>
+      <div class="eval-panel-body">
+        <div id="bench-metrics" class="bench-metrics"></div>
+        <div id="bench-results" class="bench-results"></div>
+      </div>
+    </aside>
+
+    <!-- Log Panel (always open) -->
+    <aside id="log-panel" class="log-panel">
+      <div class="log-panel-header">
+        <h3>// live_logs</h3>
+        <div class="log-controls">
+          <div class="tda-toggle" id="tda-toggle">
+            <button class="tda-toggle-btn active" data-mode="flat" onclick="setLogMode('flat')">Flat</button>
+            <button class="tda-toggle-btn" data-mode="tda" onclick="setLogMode('tda')">TDA</button>
+          </div>
+          <select id="log-level-filter" onchange="handleLogLevelChange()">
+            <option value="">ALL</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO" selected>INFO</option>
+            <option value="WARNING">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+          <button class="log-clear-btn" onclick="clearLogPanel()">Clear</button>
+        </div>
+      </div>
+      <div id="log-entries" class="log-entries"></div>
+      <div id="tda-view" class="tda-view" style="display:none;">
+        <div id="tda-betti-bar" class="tda-betti-bar"></div>
+        <svg id="tda-persistence-diagram" class="tda-persistence-diagram"></svg>
+        <div id="tda-clusters" class="tda-clusters"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

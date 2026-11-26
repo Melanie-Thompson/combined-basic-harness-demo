@@ -20,7 +20,7 @@ from AI.signing import canonicalize_args, sign_execution
 
 log = logging.getLogger("sandbox")
 
-API_SERVER = os.getenv("API_SERVER", "http://localhost:8003")
+API_SERVER = os.getenv("API_SERVER", "http://localhost:8000/api")
 MAX_TOOL_OUTPUT = 4_000
 
 

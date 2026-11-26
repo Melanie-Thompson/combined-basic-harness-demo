@@ -10,6 +10,7 @@ compact summary reference, not the raw output.
 """
 
 import logging
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
@@ -38,15 +39,19 @@ from AI.sandbox import SandboxSession, make_tools
 
 log = logging.getLogger("graph")
 
-MODEL = "qwen3.5:4b"
-BASE_URL = "http://localhost:11434/v1"
-API_KEY = "ollama"
+MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-9B")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://api.together.ai/v1")
+API_KEY = os.getenv("TOGETHER_API_KEY", "ollama")
 MAX_TOOL_ROUNDS = 5
 MAX_FAITHFULNESS_RETRIES = 2
 
 SYSTEM_PROMPT = (
     "You are a tool-first assistant. Every response MUST begin with a tool call. "
     "Interpret every user message as an instruction to call the most relevant tool.\n\n"
+    "IMPORTANT: When the user asks about a country, region, or large area, call the tool "
+    "multiple times for different major cities/locations in that area. For example, "
+    "'weather in Italy' should check Rome, Milan, Naples, etc. — not just one city. "
+    "You may make several tool calls before answering.\n\n"
     "After receiving tool results, write a helpful natural-language answer that:\n"
     "- Presents the tool data in a clear, conversational way\n"
     "- Uses all relevant values from the tool output (numbers, names, conditions)\n"
@@ -62,7 +67,7 @@ _llm = ChatOpenAI(
     temperature=0.2,
     timeout=120,
     max_retries=1,
-    reasoning_effort="none",
+    # reasoning_effort not supported by all providers
 )
 
 
@@ -89,6 +94,7 @@ class AgentState(TypedDict, total=False):
     tool_records: list[ToolExecutionRecord]
     round_num: int
     grounded: bool
+    summarising: bool
     faithfulness_retries: int
     blocked_reason: str
     buffered_tokens: list[str]
@@ -136,26 +142,89 @@ async def _load_tool_result(session_id: str, tool_call_id: str) -> str | None:
 def _make_plan_node(llm_forced, llm_auto, tools_by_name: dict):
     """Create the plan node — LLM decides which tool to call (or responds)."""
 
+    # LLM with no tools — forces a text response for the summarise step
+    llm_no_tools = ChatOpenAI(
+        model=MODEL, base_url=BASE_URL, api_key=API_KEY,
+        temperature=0.2, timeout=120, max_retries=1,
+        # reasoning_effort not supported by all providers
+    )
+
     async def plan(state: AgentState) -> dict:
         round_num = state.get("round_num", 0)
         grounded = state.get("grounded", False)
-        messages = state.get("messages", [])
+        summarising = state.get("summarising", False)
+        messages = list(state.get("messages", []))
 
         if round_num >= MAX_TOOL_ROUNDS:
             return {"blocked_reason": "max tool rounds exceeded", "done": True}
 
-        llm = llm_auto if grounded else llm_forced
-        full: AIMessageChunk | None = None
-        buffered: list[str] = []
-
-        async for chunk in llm.astream(messages):
-            full = chunk if full is None else full + chunk
-            if grounded:
+        # Phase 3: forced summarise — no tools, must produce text
+        if summarising:
+            messages.append(HumanMessage(
+                "Now summarise ALL the tool results above into a helpful "
+                "natural-language answer. Use the data the tools returned. "
+                "Do NOT call any more tools."
+            ))
+            full: AIMessageChunk | None = None
+            buffered: list[str] = []
+            async for chunk in llm_no_tools.astream(messages):
+                full = chunk if full is None else full + chunk
                 text = _flatten(chunk.content)
                 if not text:
                     text = chunk.additional_kwargs.get("reasoning_content", "")
                 if text:
                     buffered.append(text)
+
+            if full is None:
+                return {"done": True}
+
+            log.info("plan: summarise step produced %d tokens", len(buffered))
+            return {
+                "messages": [full],
+                "buffered_tokens": buffered,
+                "tool_calls_pending": [],
+            }
+
+        # Phase 2: grounded — model has tool results, can call more or respond
+        if grounded:
+            full = None
+            buffered = []
+            async for chunk in llm_auto.astream(messages):
+                full = chunk if full is None else full + chunk
+                text = _flatten(chunk.content)
+                if not text:
+                    text = chunk.additional_kwargs.get("reasoning_content", "")
+                if text:
+                    buffered.append(text)
+
+            if full is None:
+                return {"done": True}
+
+            # Model chose to call more tools — keep going
+            if full.tool_calls:
+                pending = [
+                    {"name": c["name"], "args": c["args"], "id": c.get("id", uuid.uuid4().hex)}
+                    for c in full.tool_calls
+                ]
+                log.info("plan: grounded model requested %d more tool calls", len(pending))
+                return {
+                    "messages": [full],
+                    "tool_calls_pending": pending,
+                    "round_num": round_num + 1,
+                }
+
+            # Model produced text — pass through to evaluate
+            log.info("plan: grounded model responded with text (%d tokens)", len(buffered))
+            return {
+                "messages": [full],
+                "buffered_tokens": buffered,
+                "tool_calls_pending": [],
+            }
+
+        # Phase 1: not grounded — force a tool call
+        full = None
+        async for chunk in llm_forced.astream(messages):
+            full = chunk if full is None else full + chunk
 
         if full is None:
             return {"done": True}
@@ -168,18 +237,12 @@ def _make_plan_node(llm_forced, llm_auto, tools_by_name: dict):
                 )
 
         if not full.tool_calls and not bad_msgs:
-            if not grounded:
-                return {
-                    "messages": [full, HumanMessage(
-                        "You MUST use at least one tool before answering. "
-                        "Do not answer from your own knowledge — call a tool first."
-                    )],
-                    "round_num": round_num + 1,
-                }
             return {
-                "messages": [full],
-                "buffered_tokens": buffered,
-                "tool_calls_pending": [],
+                "messages": [full, HumanMessage(
+                    "You MUST use at least one tool before answering. "
+                    "Do not answer from your own knowledge — call a tool first."
+                )],
+                "round_num": round_num + 1,
             }
 
         pending = [
@@ -262,15 +325,22 @@ def _make_execute_node(tools_by_name: dict[str, BaseTool], registry):
             }
 
         try:
-            result = await t.ainvoke(call)
+            tool_call = {
+                "name": call["name"],
+                "args": call["args"],
+                "id": call["id"],
+                "type": "tool_call",
+            }
+            result = await t.ainvoke(tool_call)
             record = getattr(result, "artifact", None)
-            if record is not None:
+            content_str = str(result.content) if hasattr(result, "content") else str(result)
+            if isinstance(record, ToolExecutionRecord):
                 verify_tool_execution(record)
         except VerificationError as e:
-            result = ToolMessage(f"error: verification failed: {e}", tool_call_id=call["id"])
+            content_str = f"error: verification failed: {e}"
             record = None
         except Exception as e:
-            result = ToolMessage(f"error: {e}", tool_call_id=call["id"])
+            content_str = f"error: {e}"
             record = None
 
         new_records = list(state.get("tool_records", []))
@@ -280,7 +350,7 @@ def _make_execute_node(tools_by_name: dict[str, BaseTool], registry):
             new_records.append(record)
             full_output = record.tool_output
         else:
-            full_output = str(result.content) if hasattr(result, "content") else str(result)
+            full_output = content_str
 
         # Store full result in Redis context store
         session_id = state.get("session_id", "")
@@ -288,7 +358,7 @@ def _make_execute_node(tools_by_name: dict[str, BaseTool], registry):
             await _store_tool_result(session_id, call["id"], call["name"], full_output)
 
         # Put a compact reference in the model's message context instead of the full output
-        result_text = str(result.content)[:2000] if hasattr(result, "content") else str(result)[:2000]
+        result_text = content_str[:2000]
         compact_msg = ToolMessage(
             content=_make_context_ref(call["name"], call["id"], result_text),
             tool_call_id=call["id"],
@@ -322,16 +392,19 @@ def _make_evaluate_node(registry):
         records = state.get("tool_records", [])
         buffered = state.get("buffered_tokens", [])
         if not records:
-            return {"buffered_tokens": buffered}
+            log.info("evaluate: no tool records — skipping faithfulness")
+            return {"buffered_tokens": buffered, "done": True}
 
         messages = state.get("messages", [])
         last_msg = messages[-1] if messages else None
         if last_msg is None:
-            return {}
+            return {"done": True}
 
         ai_text = _flatten(last_msg.content)
         if not ai_text:
-            return {}
+            return {"done": True}
+
+        log.info("evaluate: checking faithfulness against %d records", len(records))
 
         faith_by_id = check_faithfulness(ai_text, records)
 
@@ -365,6 +438,7 @@ def _make_evaluate_node(registry):
                 log.info("faithfulness retry %d/%d: %s", retries, MAX_FAITHFULNESS_RETRIES, mismatches)
                 return {
                     "faithfulness_retries": retries,
+                    "summarising": True,
                     "buffered_tokens": [],
                     "messages": [HumanMessage(
                         "Your response must be based ONLY on the tool output above. "
@@ -472,6 +546,7 @@ async def stream_reply(
             "user_message": message,
             "session_id": session_id or "",
             "grounded": not bool(tools),
+            "summarising": False,
             "tool_calls_pending": [],
             "tool_records": [],
             "round_num": 0,

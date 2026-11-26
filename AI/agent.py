@@ -9,6 +9,7 @@ pip install langchain-openai pydantic-monty
 
 import json
 import logging
+import os
 import random
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack
@@ -32,15 +33,19 @@ from AI.faithfulness import check_faithfulness, check_relevance
 from AI.models.message import InterstitialCheck, ToolExecution, ToolExecutionRecord
 from AI.sandbox import SandboxSession, close_sandbox, make_tools
 
-MODEL = "qwen3.5:4b"                          # or "qwen3.5:9b" until 4b is pulled
-BASE_URL = "http://localhost:11434/v1"        # LM Studio: http://localhost:1234/v1
-API_KEY = "ollama"                            # ignored locally, must be non-empty
+MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3.5-9B")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://api.together.ai/v1")
+API_KEY = os.getenv("TOGETHER_API_KEY", "ollama")
 
 MAX_TOOL_ROUNDS = 5                           # stops runaway call loops on small models
 
 SYSTEM_PROMPT = (
     "You are a tool-first assistant. Every response MUST begin with a tool call. "
     "Interpret every user message as an instruction to call the most relevant tool.\n\n"
+    "IMPORTANT: When the user asks about a country, region, or large area, call the tool "
+    "multiple times for different major cities/locations in that area. For example, "
+    "'weather in Italy' should check Rome, Milan, Naples, etc. — not just one city. "
+    "You may make several tool calls before answering.\n\n"
     "After receiving tool results, write a helpful natural-language answer that:\n"
     "- Presents the tool data in a clear, conversational way\n"
     "- Uses all relevant values from the tool output (numbers, names, conditions)\n"
@@ -61,7 +66,7 @@ _llm = ChatOpenAI(
     temperature=0.2,
     timeout=120,
     max_retries=1,
-    reasoning_effort="none",                     # ← kills the chain of thought
+    # reasoning_effort not supported by all providers
 )
 
 

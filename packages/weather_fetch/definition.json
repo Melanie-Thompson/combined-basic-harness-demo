@@ -1,0 +1,30 @@
+{
+  "name": "weather_fetch",
+  "description": "Get the current weather for a city. Returns temperature, conditions, and humidity.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string",
+        "description": "City name"
+      }
+    },
+    "required": [
+      "city"
+    ]
+  },
+  "kind": "fetch",
+  "placement": "remote",
+  "capabilities": [
+    {
+      "kind": "network",
+      "target": "api.weather.example.com"
+    }
+  ],
+  "tunnel": {
+    "base_url": "https://api.weather.example.com",
+    "allowed_hosts": [
+      "api.weather.example.com"
+    ]
+  }
+}
