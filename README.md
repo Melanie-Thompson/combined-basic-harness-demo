@@ -1,13 +1,23 @@
-# Basic Harness 2
+---
+title: Agent Harness Demo
+emoji: "\U0001F527"
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
-Reference implementation for Code to Agent: AI agent harness with sandboxed tool execution, cryptographic verification, and semantic faithfulness checking.
+# Agent Harness Demo
+
+Combined demo: AI agent harness with plan-and-execute LangGraph agent, tool publisher API, faithfulness evaluation, and frontend — all in one deployable package.
 
 ## Architecture
 
 ```
-Client  ->  FastAPI (/chat, /packages)  ->  LangChain tool-calling loop  ->  Ollama (qwen3.5:4b)
+Client  ->  FastAPI (/chat, /packages)  ->  LangGraph plan-and-execute  ->  Together AI (Qwen/Qwen3.5-9B)
                                                    |                                  ^
-                                             Pydantic Monty sandbox                   |
+                                             API sub-app (tool execution)             |
                                              (Rust, isolated process)           Context Manager
                                                    |                          (TDA clustering)
                                              Tool functions                         |
