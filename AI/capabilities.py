@@ -5,6 +5,8 @@ a restricted OSAccess and a filtered external_lookup for the Monty sandbox.
 Anything undeclared is blocked.
 """
 
+from __future__ import annotations
+
 import fnmatch
 import logging
 import os
