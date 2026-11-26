@@ -59,15 +59,21 @@ MAX_FAITHFULNESS_RETRIES = 2
 
 # ── Model ────────────────────────────────────────────────────────────────────
 
-_llm = ChatOpenAI(
-    model=MODEL,
-    base_url=BASE_URL,
-    api_key=API_KEY,
-    temperature=0.2,
-    timeout=120,
-    max_retries=1,
-    # reasoning_effort not supported by all providers
-)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(
+            model=MODEL,
+            base_url=BASE_URL,
+            api_key=os.getenv("TOGETHER_API_KEY", "ollama"),
+            temperature=0.2,
+            timeout=120,
+            max_retries=1,
+        )
+    return _llm
 
 
 def _flatten(content) -> str:
@@ -160,8 +166,9 @@ async def stream_reply(
         tools = make_tools(sandbox, registry=registry)
         tools_by_name = {t.name: t for t in tools}
         has_tools = bool(tools)
-        llm_forced = _llm.bind_tools(tools, tool_choice="required") if has_tools else _llm.bind_tools(tools)
-        llm_auto = _llm.bind_tools(tools)
+        llm = _get_llm()
+        llm_forced = llm.bind_tools(tools, tool_choice="required") if has_tools else llm.bind_tools(tools)
+        llm_auto = llm.bind_tools(tools)
         grounded = not has_tools
 
         faithfulness_retries = 0
@@ -231,7 +238,7 @@ async def stream_reply(
                                 ),
                                 HumanMessage(message),
                             ]
-                            deflection_response = await _llm.ainvoke(deflection_prompt)
+                            deflection_response = await _get_llm().ainvoke(deflection_prompt)
                             deflection_text = _flatten(deflection_response.content) or "I got results but couldn't summarise them accurately. Could you try rephrasing?"
                             yield {"type": "tool_blocked", "reason": deflection_text}
                             _export()
@@ -280,7 +287,7 @@ async def stream_reply(
                     ),
                     HumanMessage(message),
                 ]
-                deflection_response = await _llm.ainvoke(deflection_prompt)
+                deflection_response = await _get_llm().ainvoke(deflection_prompt)
                 deflection_text = _flatten(deflection_response.content) or "Sorry, that's outside what I can help with."
                 yield {"type": "tool_blocked", "reason": deflection_text}
                 _export()
@@ -335,7 +342,7 @@ async def stream_reply(
             HumanMessage(message),
         ]
         try:
-            deflection_response = await _llm.ainvoke(deflection_prompt)
+            deflection_response = await _get_llm().ainvoke(deflection_prompt)
             deflection_text = _flatten(deflection_response.content) or "I wasn't able to help with that. Could you try rephrasing?"
         except Exception:
             deflection_text = "I wasn't able to help with that. Could you try rephrasing?"

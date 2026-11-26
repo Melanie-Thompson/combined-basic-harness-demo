@@ -60,15 +60,21 @@ SYSTEM_PROMPT = (
     "- NEVER invents data points the tool did not return"
 )
 
-_llm = ChatOpenAI(
-    model=MODEL,
-    base_url=BASE_URL,
-    api_key=API_KEY,
-    temperature=0.2,
-    timeout=120,
-    max_retries=1,
-    # reasoning_effort not supported by all providers
-)
+_llm: ChatOpenAI | None = None
+
+
+def _get_llm() -> ChatOpenAI:
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(
+            model=MODEL,
+            base_url=BASE_URL,
+            api_key=os.getenv("TOGETHER_API_KEY", "ollama"),
+            temperature=0.2,
+            timeout=120,
+            max_retries=1,
+        )
+    return _llm
 
 
 def _flatten(content) -> str:
@@ -286,7 +292,7 @@ def _make_relevance_node(registry):
                 ),
                 HumanMessage(user_msg),
             ]
-            deflection_response = await _llm.ainvoke(deflection_prompt)
+            deflection_response = await _get_llm().ainvoke(deflection_prompt)
             deflection_text = _flatten(deflection_response.content) or "Sorry, that's outside what I can help with."
             existing_events = state.get("events", [])
             return {
@@ -424,7 +430,7 @@ def _make_evaluate_node(registry):
                         ),
                         HumanMessage(user_msg),
                     ]
-                    deflection_response = await _llm.ainvoke(deflection_prompt)
+                    deflection_response = await _get_llm().ainvoke(deflection_prompt)
                     deflection_text = _flatten(deflection_response.content) or \
                         "I got results but couldn't summarise them accurately. Could you try rephrasing?"
                     existing_events = state.get("events", [])
@@ -462,8 +468,9 @@ def build_graph(tools: list[BaseTool], registry=None):
     tools_by_name = {t.name: t for t in tools}
     has_tools = bool(tools)
 
-    llm_forced = _llm.bind_tools(tools, tool_choice="required") if has_tools else _llm.bind_tools(tools)
-    llm_auto = _llm.bind_tools(tools)
+    llm = _get_llm()
+    llm_forced = llm.bind_tools(tools, tool_choice="required") if has_tools else llm.bind_tools(tools)
+    llm_auto = llm.bind_tools(tools)
 
     graph = StateGraph(AgentState)
 
