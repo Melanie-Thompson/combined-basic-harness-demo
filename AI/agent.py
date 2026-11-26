@@ -65,10 +65,11 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
+        key = os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
         _llm = ChatOpenAI(
             model=MODEL,
             base_url=BASE_URL,
-            api_key=os.getenv("TOGETHER_API_KEY", "ollama"),
+            api_key=key,
             temperature=0.2,
             timeout=120,
             max_retries=1,

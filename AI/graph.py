@@ -66,10 +66,11 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
+        key = os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
         _llm = ChatOpenAI(
             model=MODEL,
             base_url=BASE_URL,
-            api_key=os.getenv("TOGETHER_API_KEY", "ollama"),
+            api_key=key,
             temperature=0.2,
             timeout=120,
             max_retries=1,
@@ -149,10 +150,10 @@ def _make_plan_node(llm_forced, llm_auto, tools_by_name: dict):
     """Create the plan node — LLM decides which tool to call (or responds)."""
 
     # LLM with no tools — forces a text response for the summarise step
+    key = os.getenv("TOGETHER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
     llm_no_tools = ChatOpenAI(
-        model=MODEL, base_url=BASE_URL, api_key=API_KEY,
+        model=MODEL, base_url=BASE_URL, api_key=key,
         temperature=0.2, timeout=120, max_retries=1,
-        # reasoning_effort not supported by all providers
     )
 
     async def plan(state: AgentState) -> dict:
