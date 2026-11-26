@@ -42,31 +42,36 @@ with gr.Blocks(title="Agent Harness Demo") as demo:
         pass
 
     async def chat(message):
+        import traceback
         from AI.graph import stream_reply
         from main import _registry
 
-        tokens = []
-        tools = []
-        blocked = ""
+        try:
+            tokens = []
+            tools = []
+            blocked = ""
 
-        async for evt in stream_reply(
-            message,
-            registry=_registry,
-            session_id="gradio_demo",
-        ):
-            evt_type = evt.get("type", "")
-            if evt_type == "token":
-                tokens.append(evt["token"])
-            elif evt_type == "tool_call":
-                tools.append(f"-> {evt['tool']}({evt.get('args', {})})")
-            elif evt_type == "tool_result":
-                tools.append(f"<- {evt['tool']}: {evt.get('result', '')[:200]}")
-            elif evt_type == "tool_blocked":
-                blocked = evt.get("reason", "Blocked")
+            async for evt in stream_reply(
+                message,
+                registry=_registry,
+                session_id="gradio_demo",
+            ):
+                evt_type = evt.get("type", "")
+                if evt_type == "token":
+                    tokens.append(evt["token"])
+                elif evt_type == "tool_call":
+                    tools.append(f"-> {evt['tool']}({evt.get('args', {})})")
+                elif evt_type == "tool_result":
+                    tools.append(f"<- {evt['tool']}: {evt.get('result', '')[:200]}")
+                elif evt_type == "tool_blocked":
+                    blocked = evt.get("reason", "Blocked")
 
-        response = blocked if blocked else "".join(tokens)
-        tool_text = "\n".join(tools) if tools else "(no tool calls)"
-        return response, tool_text
+            response = blocked if blocked else "".join(tokens)
+            tool_text = "\n".join(tools) if tools else "(no tool calls)"
+            return response, tool_text
+        except Exception as e:
+            tb = traceback.format_exc()
+            return f"Error: {e}\n\n{tb}", "(error)"
 
     send.click(fn=chat, inputs=prompt, outputs=[output, tool_log])
     prompt.submit(fn=chat, inputs=prompt, outputs=[output, tool_log])
