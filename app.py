@@ -6,6 +6,7 @@ HF Spaces expects `demo.launch()` or a FastAPI `app` — we provide both.
 
 import os
 import gradio as gr
+import spaces
 
 # Set port for HF Spaces
 PORT = int(os.getenv("PORT", "7860"))
@@ -36,6 +37,7 @@ with gr.Blocks(title="Agent Harness Demo") as demo:
     output = gr.Textbox(label="Response", lines=8, interactive=False)
     tool_log = gr.Textbox(label="Tool Calls", lines=4, interactive=False)
 
+    @spaces.GPU(duration=60)
     async def chat(message):
         from AI.graph import stream_reply
         from AI.package_lifecycle import PackageRegistry
