@@ -38,21 +38,20 @@ with gr.Blocks(title="Agent Harness Demo") as demo:
     tool_log = gr.Textbox(label="Tool Calls", lines=4, interactive=False)
 
     @spaces.GPU(duration=60)
+    def _gpu_noop():
+        pass
+
     async def chat(message):
         from AI.graph import stream_reply
-        from AI.package_lifecycle import PackageRegistry
+        from main import _registry
 
         tokens = []
         tools = []
         blocked = ""
 
-        registry = PackageRegistry()
-        from main import _registry
-        actual_registry = _registry
-
         async for evt in stream_reply(
             message,
-            registry=actual_registry,
+            registry=_registry,
             session_id="gradio_demo",
         ):
             evt_type = evt.get("type", "")
