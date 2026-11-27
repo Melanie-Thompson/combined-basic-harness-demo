@@ -532,21 +532,47 @@ def build_graph(tools: list[BaseTool], registry=None):
 
 RETRY_REFERENCE = "try again retry redo repeat"
 RETRY_THRESHOLD = 0.35
+MAX_RETRIES_PER_QUERY = 5
 
 
-def _resolve_retry(message: str, history: list[BaseMessage]) -> str:
-    """If the message is a retry/repeat instruction, return the last user query."""
+def _resolve_retry(message: str, history: list[BaseMessage]) -> str | None:
+    """If the message is a retry/repeat instruction, return the last user query.
+
+    Returns None if the same query has already been retried MAX_RETRIES_PER_QUERY
+    times — the caller should block the request.
+    """
     from AI.embeddings import semantic_similarity
     score = semantic_similarity(message, RETRY_REFERENCE)
     if score < RETRY_THRESHOLD:
         return message
+    resolved = None
     for msg in reversed(history):
         if isinstance(msg, HumanMessage):
             prev = msg.content if isinstance(msg.content, str) else str(msg.content)
             if semantic_similarity(prev, RETRY_REFERENCE) < RETRY_THRESHOLD:
-                log.info("retry detected (score=%.3f): resolving '%s' -> '%s'", score, message, prev[:60])
-                return prev
-    return message
+                resolved = prev
+                break
+    if resolved is None:
+        return message
+
+    retry_count = 0
+    for msg in reversed(history):
+        if isinstance(msg, HumanMessage):
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            if semantic_similarity(content, RETRY_REFERENCE) >= RETRY_THRESHOLD:
+                retry_count += 1
+            elif content == resolved:
+                retry_count += 1
+            else:
+                break
+
+    if retry_count >= MAX_RETRIES_PER_QUERY:
+        log.warning("retry limit reached (%d) for query: '%s'", retry_count, resolved[:60])
+        return None
+
+    log.info("retry detected (score=%.3f, attempt %d): resolving '%s' -> '%s'",
+             score, retry_count + 1, message, resolved[:60])
+    return resolved
 
 
 async def stream_reply(
@@ -561,7 +587,11 @@ async def stream_reply(
 ) -> AsyncIterator[dict]:
     """LangGraph-based stream_reply — drop-in replacement for the loop-based one."""
     managed_history = history or []
-    message = _resolve_retry(message, managed_history)
+    resolved = _resolve_retry(message, managed_history)
+    if resolved is None:
+        yield {"type": "tool_blocked", "reason": "Retry limit reached — please rephrase your request.", "tool": ""}
+        return
+    message = resolved
     if session_id and managed_history:
         ctx = ContextManager(session_id)
         managed_history = await ctx.prepare(managed_history, message)
