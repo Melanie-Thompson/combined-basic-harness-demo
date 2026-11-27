@@ -530,6 +530,25 @@ def build_graph(tools: list[BaseTool], registry=None):
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
+RETRY_REFERENCE = "try again retry redo repeat"
+RETRY_THRESHOLD = 0.35
+
+
+def _resolve_retry(message: str, history: list[BaseMessage]) -> str:
+    """If the message is a retry/repeat instruction, return the last user query."""
+    from AI.embeddings import semantic_similarity
+    score = semantic_similarity(message, RETRY_REFERENCE)
+    if score < RETRY_THRESHOLD:
+        return message
+    for msg in reversed(history):
+        if isinstance(msg, HumanMessage):
+            prev = msg.content if isinstance(msg.content, str) else str(msg.content)
+            if semantic_similarity(prev, RETRY_REFERENCE) < RETRY_THRESHOLD:
+                log.info("retry detected (score=%.3f): resolving '%s' -> '%s'", score, message, prev[:60])
+                return prev
+    return message
+
+
 async def stream_reply(
     message: str,
     system: str = SYSTEM_PROMPT,
@@ -542,6 +561,7 @@ async def stream_reply(
 ) -> AsyncIterator[dict]:
     """LangGraph-based stream_reply — drop-in replacement for the loop-based one."""
     managed_history = history or []
+    message = _resolve_retry(message, managed_history)
     if session_id and managed_history:
         ctx = ContextManager(session_id)
         managed_history = await ctx.prepare(managed_history, message)
