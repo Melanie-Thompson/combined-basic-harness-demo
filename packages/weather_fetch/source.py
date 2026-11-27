@@ -2,9 +2,13 @@ def weather_fetch(city: str) -> str:
     import urllib.request
     import urllib.parse
     import json
+    from difflib import SequenceMatcher
 
-    # Geocode city name to lat/lon via Open-Meteo
-    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1"
+    query = city.strip()
+    if not query:
+        return "error: no city provided"
+
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(query)}&count=10"
     try:
         with urllib.request.urlopen(geo_url, timeout=10) as resp:
             geo = json.loads(resp.read())
@@ -15,28 +19,38 @@ def weather_fetch(city: str) -> str:
     if not results:
         return f"error: city '{city}' not found"
 
-    lat = results[0]["latitude"]
-    lon = results[0]["longitude"]
-    name = results[0].get("name", city)
-    country = results[0].get("country", "")
+    # Score each result by how well its name matches the query.
+    # The API returns ranked results but the top one may not match
+    # (e.g. "Mars" -> "Marseille"). We pick the best name-match
+    # among all candidates, letting the API handle the geocoding
+    # and us handle the string similarity.
+    q_lower = query.lower()
+    scored = []
+    for r in results:
+        name = r.get("name", "").lower()
+        ratio = SequenceMatcher(None, q_lower, name).ratio()
+        # Boost: query is a prefix of the name or vice versa
+        if name.startswith(q_lower) or q_lower.startswith(name):
+            ratio = max(ratio, 0.8)
+        # Boost: query words all appear in the name
+        q_words = q_lower.split()
+        if q_words and all(w in name for w in q_words):
+            ratio = max(ratio, 0.85)
+        scored.append((ratio, r))
 
-    # Validate the geocoded result actually matches the query.
-    # Require the result name to start with or equal the query,
-    # or the query to equal the result. "Mars" != "Marseille",
-    # but "New York" == "New York" and "San Fran" matches "San Francisco".
-    query_lower = city.lower().strip()
-    name_lower = name.lower().strip()
-    match = (
-        query_lower == name_lower
-        or name_lower.startswith(query_lower + " ")
-        or name_lower.startswith(query_lower + ",")
-        or query_lower.startswith(name_lower + " ")
-        or query_lower.startswith(name_lower + ",")
-    )
-    if not match:
-        return f"error: '{city}' is not a known city (closest match: {name}, {country})"
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_ratio, best = scored[0]
 
-    # Fetch current weather from Open-Meteo (free, no key)
+    if best_ratio < 0.5:
+        top_name = results[0].get("name", "?")
+        top_country = results[0].get("country", "")
+        return f"error: '{city}' is not a known city (closest match: {top_name}, {top_country})"
+
+    lat = best["latitude"]
+    lon = best["longitude"]
+    name = best.get("name", city)
+    country = best.get("country", "")
+
     weather_url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}"
