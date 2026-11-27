@@ -259,6 +259,7 @@ def check_faithfulness(
     """
     results: dict[str | None, FaithfulnessResult] = {}
     cleaned_response = (ai_text or "").strip()
+    all_tool_output = " ".join((r.tool_output or "") for r in records).lower()
 
     for record in records:
         tool_out = (record.tool_output or "").strip()
@@ -304,6 +305,26 @@ def check_faithfulness(
             if score < SEMANTIC_THRESHOLD:
                 contained = False
                 mismatches.append(f"semantic:{score:.2f}<{SEMANTIC_THRESHOLD}")
+
+        # Entity hallucination check: if the response attributes tool data
+        # to entities not present in the tool output, flag it.
+        # Extract capitalized words/phrases from response that look like
+        # proper nouns (cities, names) and verify they appear in tool output.
+        response_entities = set(re.findall(r'\b([A-Z][a-z]{2,})\b', cleaned_response))
+        hallucinated = [e for e in response_entities if e.lower() not in all_tool_output
+                        and e.lower() not in ('the', 'weather', 'currently', 'conditions',
+                                               'here', 'both', 'all')]
+        if hallucinated:
+            # Only flag if the hallucinated entities look like they're being
+            # attributed data (followed by colon, number, or temperature)
+            for entity in hallucinated:
+                pattern = re.compile(
+                    rf'\b{re.escape(entity)}\b[^.]*?(?:\d|°|fair|sunny|cloudy|rain|overcast|clear)',
+                    re.IGNORECASE,
+                )
+                if pattern.search(cleaned_response):
+                    contained = False
+                    mismatches.append(f"hallucinated_entity:{entity}")
 
         results[record.tool_call_id] = FaithfulnessResult(
             semantic_score=score,
