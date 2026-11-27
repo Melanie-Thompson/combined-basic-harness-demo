@@ -131,7 +131,7 @@ def _make_context_ref(tool_name: str, call_id: str, result_text: str) -> str:
 async def _store_tool_result(session_id: str, tool_call_id: str, tool_name: str, result: str) -> None:
     """Write a tool result to Redis instead of keeping it in model context."""
     if redis_store._redis is None:
-        log.warning("Redis not connected — tool result not stored")
+        log.debug("Redis not connected — tool result not stored")
         return
     await redis_store.store_tool_result(session_id, tool_call_id, tool_name, result)
     log.info("stored tool result in Redis: %s:%s (%d chars)", session_id, tool_call_id, len(result))
