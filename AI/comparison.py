@@ -104,6 +104,9 @@ async def run_inline_baseline(
                     headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                     json=body,
                 )
+                if resp.status_code == 429:
+                    latency = (time.monotonic() - start) * 1000
+                    return BaselineResult(model=agent_model, response_text="", latency_ms=latency, error="rate limited")
                 resp.raise_for_status()
                 data = resp.json()
                 choice = data["choices"][0]
