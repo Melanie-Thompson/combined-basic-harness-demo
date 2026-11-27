@@ -628,6 +628,26 @@ input.dev-otp-code {
 
 #send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
+#stress-btn {
+  padding: 8px 14px;
+  background: transparent;
+  color: var(--warning, #e5a00d);
+  border: 1px solid var(--warning, #e5a00d);
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  align-self: flex-end;
+  transition: all 0.1s;
+}
+#stress-btn:hover {
+  background: var(--warning, #e5a00d);
+  color: var(--bg-primary);
+}
+#stress-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
 /* ===== REDIS PANEL (left) ===== */
 .redis-panel {
   width: 320px;

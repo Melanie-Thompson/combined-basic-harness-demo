@@ -1247,6 +1247,57 @@ function renderBenchmarkResults(data) {
   results.innerHTML = html;
 }
 
+// --- Stress Test ---
+
+const STRESS_QUESTIONS = [
+  // Toddler
+  "Why is the sky blue?",
+  "What sound does a cow make?",
+  // Weather — simple
+  "What's the weather in Tokyo?",
+  // Irrelevant — casual
+  "Tell me a joke about penguins",
+  // Weather — compound with irrelevant
+  "What's the weather in London and also what's the meaning of life?",
+  // University level
+  "Explain the second law of thermodynamics",
+  // Weather — multi-city
+  "Compare the weather in Sydney, Berlin, and Cairo right now",
+  // Finance professional
+  "What are the implications of an inverted yield curve on emerging market debt spreads?",
+  // Weather + correction follow-up compound
+  "What's the weather on Mars and also in Paris?",
+  // Pure irrelevant — code request
+  "Write me a Python function that sorts a linked list",
+];
+
+let _stressRunning = false;
+
+async function runStressTest() {
+  if (_stressRunning || state.isStreaming) return;
+  _stressRunning = true;
+
+  const btn = document.getElementById("stress-btn");
+  btn.disabled = true;
+  btn.textContent = "Running…";
+
+  const shuffled = [...STRESS_QUESTIONS].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, 10);
+
+  for (let i = 0; i < selected.length; i++) {
+    btn.textContent = `${i + 1}/${selected.length}`;
+    appendMessage("user", selected[i]);
+    await streamChat(selected[i]);
+    if (i < selected.length - 1) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  _stressRunning = false;
+  btn.disabled = false;
+  btn.textContent = "Stress Test";
+}
+
 // --- Init ---
 
 document.addEventListener("DOMContentLoaded", async () => {

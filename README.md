@@ -17,10 +17,10 @@ Combined demo: AI agent harness with plan-and-execute LangGraph agent, tool publ
 ## Architecture
 
 ```
-Client  ->  FastAPI (/chat, /packages)  ->  LangGraph plan-and-execute  ->  Together AI (Qwen/Qwen3.5-9B)
+Client  ->  FastAPI (/chat, /packages)  ->  LangGraph plan-and-execute  ->  OpenRouter (nvidia/nemotron-3.5-lightning)
                                                    |                                  ^
-                                             API sub-app (tool execution)             |
-                                             (Rust, isolated process)           Context Manager
+                                             Direct tool execution                    |
+                                             (compile + exec from registry)     Context Manager
                                                    |                          (TDA clustering)
                                              Tool functions                         |
                                         (built-in + installed packages)     Redis (sessions +
@@ -130,20 +130,26 @@ Built-in tools cannot be replaced or discarded. Duplicate installs are rejected 
 
 ### Core loop
 
-1. User sends a message to `/chat`
-2. The context manager checks whether conversation history exceeds the token budget
-3. If over budget: TDA persistent homology clusters messages by topic, archives least-relevant clusters to Redis, rehydrates archived clusters that match the current query
-4. The LLM streams a response, optionally requesting tool calls
-5. Gate tools are never exposed to the model
-6. Each tool call executes inside a Pydantic Monty sandbox (Rust-based, memory-limited, time-limited)
-7. Capability enforcement: each tool gets a restricted virtual filesystem, environment, and function access
-8. Fetch/commit tools route through the session tunnel (mTLS, host allowlisting, audit logging)
-9. Commits with `requires_confirmation` check with the user before executing
-10. The sandbox HMAC-signs the execution (tool name + input + output) using `itsdangerous`
-11. An inline evaluator verifies the signature before the result enters the conversation
-12. Each AI message carries its own evaluation inline — intermediate messages get tool_executions + causality + interstitial, the final response gets faithfulness
-13. The full conversation is persisted to Redis
-14. On session end: all tunnels close, all external packages are discarded
+1. User sends a message to `/agent/chat`
+2. Retry detection: if the message is semantically a retry instruction ("try again", "retry", etc.), it resolves to the last actual user query. Blocked after 5 consecutive retries of the same query.
+3. The context manager checks whether conversation history exceeds the token budget
+4. If over budget: TDA persistent homology clusters messages by topic, archives least-relevant clusters to Redis, rehydrates archived clusters that match the current query
+5. The LLM streams a response, optionally requesting tool calls
+6. **Pre-execution relevance gate**: selected tools are checked against the user's intent via embedding similarity to tool descriptions/names (threshold 0.25). If direct relevance fails and there's conversation history, TDA persistent homology checks if the query is a topological follow-up to a tool-relevant cluster — no hardcoded phrase patterns, the topology discriminates.
+7. Gate tools are never exposed to the model
+8. Tool source code is compiled and executed directly from the package registry (no HTTP self-calls)
+9. Capability enforcement: each tool gets a restricted virtual filesystem, environment, and function access
+10. Fetch/commit tools route through the session tunnel (mTLS, host allowlisting, audit logging)
+11. Commits with `requires_confirmation` check with the user before executing
+12. The sandbox HMAC-signs the execution (tool name + input + output) using `itsdangerous`
+13. An inline evaluator verifies the signature before the result enters the conversation
+14. **Post-execution faithfulness**: per-tool extractors (numeric, temporal, exact with negation guards) verify the AI's response reflects tool outputs. Entity hallucination detection checks that proper nouns attributed data actually appear in tool outputs. Semantic similarity fallback for dynamic/unschematized tools.
+15. The full conversation is persisted to Redis
+16. On session end: all tunnels close, all external packages are discarded
+
+### Baseline comparison
+
+Each query also runs through an inline baseline — the same model and tools but with a raw tool-calling loop (no harness guardrails: no faithfulness, no relevance gate, no interstitial checks). The eval dashboard shows both results side by side so you can see what the harness catches that raw tool-calling misses.
 
 ### Package installation (runtime)
 
@@ -200,17 +206,19 @@ Manages the LLM's context window using Topological Data Analysis. Messages are e
 ```
 AI/
   agent.py              LLM config, tool-calling loop, stream_reply()
+  graph.py              LangGraph plan-and-execute agent with retry resolution
+  comparison.py         Inline baseline — same model + tools, no harness guardrails
   context.py            TDA context manager — clustering, scoring, archival, rehydration
   embeddings.py         Shared BERT embedding singleton (all-MiniLM-L6-v2)
-  tokenizer.py          Qwen tokenizer singleton for accurate token counting
+  tokenizer.py          Tokenizer singleton for accurate token counting
   capabilities.py       Capability enforcement — per-tool OSAccess, filtered external_lookup, inspection
   package_signing.py    Ed25519 package signing — sign/verify tool definitions + source code
   package_lifecycle.py  Runtime install/inspect/discard for tool packages
   tunnel.py             Session tunnel — mTLS httpx client, host allowlisting, audit logging
-  sandbox.py            Pydantic Monty pool, session management, LangChain tool wrappers
+  sandbox.py            Direct tool execution from registry source, LangChain tool wrappers
   signing.py            HMAC signing/verification via itsdangerous
   evaluator.py          Inline HMAC verification (deterministic, no LLM)
-  faithfulness.py       BERT semantic similarity + per-tool extractor checks
+  faithfulness.py       Two-stage relevance gate + faithfulness checking + entity hallucination detection
   causality.py          Two-layer causal evaluation (static DAG + data-flow tracing)
   redis_store.py        Redis connection lifecycle and key/value operations
   sessions.py           LangChain <-> Pydantic model conversion, Redis load/save
@@ -229,7 +237,14 @@ AI/
     word_counter.py     Word/character/sentence counting (processor)
     dice_roller.py      Standard dice notation roller (processor)
     string_tools.py     Hash computation and base64 encoding (processor)
-main.py                 FastAPI transport layer with SSE streaming and /test endpoint
+packages/
+  weather_fetch/
+    source.py           Real weather via Open-Meteo API with fuzzy geocoding and retry
+frontend/
+  index.html            Single-page app shell
+  app.js                Chat, eval dashboard, stress test, log panel, Redis inspector
+  style.css             Dark-theme UI styles
+main.py                 FastAPI transport layer with SSE streaming, baseline comparison, eval scoring
 ```
 
 ## Setup
@@ -238,8 +253,8 @@ main.py                 FastAPI transport layer with SSE streaming and /test end
 
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/) package manager
-- [Ollama](https://ollama.ai) running locally with `qwen3.5:4b` pulled
 - Redis running on localhost:6379
+- OpenRouter API key
 
 ### Install and run
 
@@ -247,25 +262,22 @@ main.py                 FastAPI transport layer with SSE streaming and /test end
 # Install dependencies
 uv sync
 
-# Pull the model
-ollama pull qwen3.5:4b
-
 # Start Redis (Docker or Homebrew)
 docker run -d -p 6379:6379 --name redis redis
 # or: brew services start redis
 
 # Start the server
-uv run uvicorn main:app --reload --port 8000
+OPENROUTER_API_KEY=your-key-here uv run uvicorn main:app --reload --port 8000
 ```
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `OPENROUTER_API_KEY` | (required) | OpenRouter API key for LLM access |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection URL |
 | `TOOL_HMAC_SECRET` | Random (per-process) | HMAC signing key. Set in production for consistency across restarts |
 | `CONTEXT_MAX_TOKENS` | `32768` | Token budget for context window management |
-| `TOKENIZER_MODEL` | `Qwen/Qwen3-4B` | HuggingFace model ID for the tokenizer |
 
 ## API
 
@@ -463,6 +475,43 @@ Each AI message carries its own evaluation inline:
   "faithfulness": {"semantic_score": 0.60, "contained": true, "faithful": true}
 }
 ```
+
+## Frontend
+
+The custom frontend provides:
+
+- **Chat panel** — streaming token display, tool call/result cards, blocked-query messages
+- **Eval dashboard** — per-query scoring (relevance, faithfulness, latency), baseline comparison with expandable responses
+- **Log panel** — real-time server logs with flat/TDA view toggle and level filtering
+- **Redis inspector** — live session and cluster state
+- **TDA visualization** — persistent homology diagram for context clusters
+
+### Stress test
+
+The **Stress Test** button fires 10 randomised questions through the chat one at a time, waiting for each to complete before sending the next. Questions span:
+
+- Toddler-level ("Why is the sky blue?", "What sound does a cow make?")
+- Simple weather queries ("What's the weather in Tokyo?")
+- Compound queries mixing weather with irrelevant requests ("What's the weather in London and also what's the meaning of life?")
+- Multi-city weather ("Compare the weather in Sydney, Berlin, and Cairo right now")
+- Irrelevant requests that should be blocked ("Tell me a joke about penguins", "Write me a Python function that sorts a linked list")
+- University-level questions ("Explain the second law of thermodynamics")
+- Finance-professional questions ("What are the implications of an inverted yield curve on emerging market debt spreads?")
+- Ambiguous/planet queries ("What's the weather on Mars and also in Paris?")
+
+The button shows progress (e.g. `3/10`) and the eval dashboard accumulates results as each query completes, giving a quick end-to-end view of how the harness handles a realistic mix of queries.
+
+### Weather tool
+
+The `weather_fetch` tool uses the free Open-Meteo API (no API key required):
+
+1. Geocodes the city name via Open-Meteo's geocoding endpoint (requests 10 candidates)
+2. Scores each result against the query using `SequenceMatcher` fuzzy string similarity, with boosts for prefix matches and word containment
+3. Picks the best match above a 0.5 similarity floor
+4. Fetches current weather (temperature, humidity, wind speed, weather code) from the Open-Meteo forecast API
+5. Includes population in the output so the LLM can judge ambiguity (e.g. "Mars, United States (population 1,658)" vs "London, United Kingdom (population 8,961,989)")
+6. Flags small/obscure places with a disambiguation note
+7. Retries on transient errors (429, 502, 503, 504) with exponential backoff
 
 ## Session persistence
 
