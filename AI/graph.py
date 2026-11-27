@@ -559,9 +559,9 @@ def _resolve_retry(message: str, history: list[BaseMessage]) -> str | None:
     for msg in reversed(history):
         if isinstance(msg, HumanMessage):
             content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            if semantic_similarity(content, RETRY_REFERENCE) >= RETRY_THRESHOLD:
-                retry_count += 1
-            elif content == resolved:
+            is_retry = semantic_similarity(content, RETRY_REFERENCE) >= RETRY_THRESHOLD
+            is_same = content.strip().lower() == resolved.strip().lower()
+            if is_retry or is_same:
                 retry_count += 1
             else:
                 break
