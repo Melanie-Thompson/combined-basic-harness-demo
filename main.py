@@ -404,34 +404,58 @@ async def log_stream(request: Request, catchup: int = 0):
 
 @app.get("/redis/keys")
 async def redis_keys():
-    if redis_store._redis is None:
-        return []
-    try:
-        r = redis_store._redis
-        keys = await r.keys(f"*{_session_id}*")
-        entries = []
-        for key in sorted(keys):
-            key_type = await r.type(key)
-            ttl = await r.ttl(key)
-            value: Any = None
-            if key_type == "string":
-                raw = await r.get(key)
-                try:
-                    value = json.loads(raw) if raw else None
-                except (json.JSONDecodeError, TypeError):
-                    value = raw
+    if redis_store._redis is not None:
+        try:
+            r = redis_store._redis
+            keys = await r.keys(f"*{_session_id}*")
+            entries = []
+            for key in sorted(keys):
+                key_type = await r.type(key)
+                ttl = await r.ttl(key)
+                value: Any = None
+                if key_type == "string":
+                    raw = await r.get(key)
+                    try:
+                        value = json.loads(raw) if raw else None
+                    except (json.JSONDecodeError, TypeError):
+                        value = raw
 
-            db = "sessions" if "session" in key else "conversations"
-            entries.append({
-                "db": db,
-                "key": key,
-                "type": key_type,
-                "ttl": ttl if ttl > 0 else None,
-                "value": value,
-            })
-        return entries
-    except Exception as e:
-        return JSONResponse([{"db": "error", "key": str(e), "type": "error", "ttl": None, "value": None}])
+                db = "sessions" if "session" in key else "conversations"
+                entries.append({
+                    "db": db,
+                    "key": key,
+                    "type": key_type,
+                    "ttl": ttl if ttl > 0 else None,
+                    "value": value,
+                })
+            return entries
+        except Exception as e:
+            return JSONResponse([{"db": "error", "key": str(e), "type": "error", "ttl": None, "value": None}])
+
+    entries = []
+    for key in sorted(redis_store._memory.keys()):
+        raw = redis_store._memory[key]
+        try:
+            value = json.loads(raw) if raw else None
+        except (json.JSONDecodeError, TypeError):
+            value = raw
+        db = "sessions" if "session" in key else "conversations"
+        entries.append({
+            "db": db,
+            "key": key,
+            "type": "string",
+            "ttl": None,
+            "value": value,
+        })
+    for key in sorted(redis_store._memory_lists.keys()):
+        entries.append({
+            "db": "conversations",
+            "key": key,
+            "type": "list",
+            "ttl": None,
+            "value": redis_store._memory_lists[key],
+        })
+    return entries
 
 
 # ── TDA topology stream ───────────────────────────────────────────────────
