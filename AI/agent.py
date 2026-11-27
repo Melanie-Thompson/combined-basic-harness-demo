@@ -33,7 +33,7 @@ from AI.faithfulness import check_faithfulness, check_relevance
 from AI.models.message import InterstitialCheck, ToolExecution, ToolExecutionRecord
 from AI.sandbox import SandboxSession, close_sandbox, make_tools
 
-MODEL = os.getenv("LLM_MODEL", "google/gemma-4-31b-it:free")
+MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning:free")
 BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
 MAX_TOOL_ROUNDS = 5                           # stops runaway call loops on small models
@@ -71,7 +71,7 @@ def _get_llm() -> ChatOpenAI:
             api_key=key,
             temperature=0.2,
             timeout=120,
-            max_retries=1,
+            max_retries=5,
         )
     return _llm
 

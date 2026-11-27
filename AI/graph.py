@@ -39,7 +39,7 @@ from AI.sandbox import SandboxSession, make_tools
 
 log = logging.getLogger("graph")
 
-MODEL = os.getenv("LLM_MODEL", "google/gemma-4-31b-it:free")
+MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning:free")
 BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 MAX_TOOL_ROUNDS = 5
 MAX_FAITHFULNESS_RETRIES = 2
@@ -74,7 +74,7 @@ def _get_llm() -> ChatOpenAI:
             api_key=key,
             temperature=0.2,
             timeout=120,
-            max_retries=1,
+            max_retries=5,
         )
     return _llm
 
@@ -154,7 +154,7 @@ def _make_plan_node(llm_forced, llm_auto, tools_by_name: dict):
     key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
     llm_no_tools = ChatOpenAI(
         model=MODEL, base_url=BASE_URL, api_key=key,
-        temperature=0.2, timeout=120, max_retries=1,
+        temperature=0.2, timeout=120, max_retries=5,
     )
 
     async def plan(state: AgentState) -> dict:
