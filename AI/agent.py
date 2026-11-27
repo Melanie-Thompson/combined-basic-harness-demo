@@ -33,8 +33,8 @@ from AI.faithfulness import check_faithfulness, check_relevance
 from AI.models.message import InterstitialCheck, ToolExecution, ToolExecutionRecord
 from AI.sandbox import SandboxSession, close_sandbox, make_tools
 
-MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3.8-27B")
-BASE_URL = os.getenv("LLM_BASE_URL", "https://router.huggingface.co/v1")
+MODEL = os.getenv("LLM_MODEL", "google/gemma-4-31b-it:free")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
 MAX_TOOL_ROUNDS = 5                           # stops runaway call loops on small models
 
@@ -64,7 +64,7 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
+        key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
         _llm = ChatOpenAI(
             model=MODEL,
             base_url=BASE_URL,
