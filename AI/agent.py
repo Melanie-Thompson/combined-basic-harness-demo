@@ -50,7 +50,14 @@ SYSTEM_PROMPT = (
     "- Uses all relevant values from the tool output (numbers, names, conditions)\n"
     "- May rephrase, reorder, or add light commentary like 'quite warm' or 'you might want an umbrella'\n"
     "- NEVER adds factual claims the tool did not provide (no Wikipedia facts, no history, no definitions)\n"
-    "- NEVER invents data points the tool did not return"
+    "- NEVER invents data points the tool did not return\n\n"
+    "CRITICAL: Use your own knowledge to sanity-check tool results. If the tool "
+    "returns data for a place that is also a well-known non-geographic entity "
+    "(e.g. a planet, a fictional world, a person's name), and the user likely "
+    "meant that other meaning, say so. For example, if the user asks about "
+    "'Pluto' or 'Mars' and the tool returns weather for a tiny obscure town, "
+    "acknowledge the ambiguity: tell them what the tool found, but note that "
+    "the name is also a planet and there is no weather data for the planet."
 )
 
 MAX_FAITHFULNESS_RETRIES = 2
