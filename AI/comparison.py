@@ -30,7 +30,7 @@ class BaselineResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "model": self.model,
-            "response_text": self.response_text[:500],
+            "response_text": self.response_text,
             "latency_ms": round(self.latency_ms, 1),
             "error": self.error,
         }
