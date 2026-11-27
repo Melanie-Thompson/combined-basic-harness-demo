@@ -307,6 +307,21 @@ async def agent_chat(req: AgentChatRequest, request: Request):
         yield sse({"text": current_text}, event="response")
 
         try:
+            baselines = []
+            try:
+                from AI.graph import MODEL as AGENT_MODEL
+                baseline = await run_inline_baseline(req.prompt, AGENT_MODEL, registry=_registry)
+                bd = baseline.to_dict()
+                if tool_output.strip() and bd["response_text"].strip():
+                    bd["faithfulness_score"] = round(
+                        semantic_similarity(tool_output.strip(), bd["response_text"].strip()), 3
+                    )
+                else:
+                    bd["faithfulness_score"] = None
+                baselines = [bd]
+            except Exception as exc:
+                log.warning("baseline comparison failed: %s", exc)
+
             result = _score_query(
                 prompt=req.prompt,
                 actual_tool=actual_tool,
@@ -315,30 +330,12 @@ async def agent_chat(req: AgentChatRequest, request: Request):
                 tool_output=tool_output,
                 tool_args=tool_args,
                 latency_ms=latency_ms,
-                baselines=[],
+                baselines=baselines,
             )
             await _persist_eval()
             yield sse(result.to_dict(), event="eval")
         except Exception as exc:
             log.exception("eval scoring failed")
-
-        async def _run_baseline_bg(prompt, tool_out, result_obj):
-            try:
-                from AI.graph import MODEL as AGENT_MODEL
-                baseline = await run_inline_baseline(prompt, AGENT_MODEL, registry=_registry)
-                bd = baseline.to_dict()
-                if tool_out.strip() and bd["response_text"].strip():
-                    bd["faithfulness_score"] = round(
-                        semantic_similarity(tool_out.strip(), bd["response_text"].strip()), 3
-                    )
-                else:
-                    bd["faithfulness_score"] = None
-                result_obj.baselines = [bd]
-                await _persist_eval()
-            except Exception as exc:
-                log.warning("baseline comparison failed: %s", exc)
-
-        asyncio.create_task(_run_baseline_bg(req.prompt, tool_output, result))
 
     return StreamingResponse(
         events(),
