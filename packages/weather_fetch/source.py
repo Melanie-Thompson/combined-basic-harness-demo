@@ -20,6 +20,22 @@ def weather_fetch(city: str) -> str:
     name = results[0].get("name", city)
     country = results[0].get("country", "")
 
+    # Validate the geocoded result actually matches the query.
+    # Require the result name to start with or equal the query,
+    # or the query to equal the result. "Mars" != "Marseille",
+    # but "New York" == "New York" and "San Fran" matches "San Francisco".
+    query_lower = city.lower().strip()
+    name_lower = name.lower().strip()
+    match = (
+        query_lower == name_lower
+        or name_lower.startswith(query_lower + " ")
+        or name_lower.startswith(query_lower + ",")
+        or query_lower.startswith(name_lower + " ")
+        or query_lower.startswith(name_lower + ",")
+    )
+    if not match:
+        return f"error: '{city}' is not a known city (closest match: {name}, {country})"
+
     # Fetch current weather from Open-Meteo (free, no key)
     weather_url = (
         f"https://api.open-meteo.com/v1/forecast?"
