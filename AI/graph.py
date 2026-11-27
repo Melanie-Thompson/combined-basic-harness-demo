@@ -39,7 +39,7 @@ from AI.sandbox import SandboxSession, make_tools
 
 log = logging.getLogger("graph")
 
-MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning:free")
+MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning")
 BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 MAX_TOOL_ROUNDS = 5
 MAX_FAITHFULNESS_RETRIES = 2

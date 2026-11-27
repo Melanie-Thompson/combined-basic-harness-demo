@@ -33,7 +33,7 @@ from AI.faithfulness import check_faithfulness, check_relevance
 from AI.models.message import InterstitialCheck, ToolExecution, ToolExecutionRecord
 from AI.sandbox import SandboxSession, close_sandbox, make_tools
 
-MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning:free")
+MODEL = os.getenv("LLM_MODEL", "nvidia/nemotron-3.5-lightning")
 BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
 MAX_TOOL_ROUNDS = 5                           # stops runaway call loops on small models
