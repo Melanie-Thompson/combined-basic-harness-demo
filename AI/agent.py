@@ -34,7 +34,7 @@ from AI.models.message import InterstitialCheck, ToolExecution, ToolExecutionRec
 from AI.sandbox import SandboxSession, close_sandbox, make_tools
 
 MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
-BASE_URL = os.getenv("LLM_BASE_URL", "https://router.hugging-face.cn/v1")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://router.huggingface.co/v1")
 
 MAX_TOOL_ROUNDS = 5                           # stops runaway call loops on small models
 

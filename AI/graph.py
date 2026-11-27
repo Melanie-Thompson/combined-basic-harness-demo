@@ -40,7 +40,7 @@ from AI.sandbox import SandboxSession, make_tools
 log = logging.getLogger("graph")
 
 MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
-BASE_URL = os.getenv("LLM_BASE_URL", "https://router.hugging-face.cn/v1")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://router.huggingface.co/v1")
 MAX_TOOL_ROUNDS = 5
 MAX_FAITHFULNESS_RETRIES = 2
 
