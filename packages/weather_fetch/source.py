@@ -2,18 +2,34 @@ def weather_fetch(city: str) -> str:
     import urllib.request
     import urllib.parse
     import json
+    import time
     from difflib import SequenceMatcher
+
+    def _fetch_json(url, retries=3):
+        for attempt in range(retries):
+            try:
+                with urllib.request.urlopen(url, timeout=10) as resp:
+                    return json.loads(resp.read()), None
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 502, 503, 504) and attempt < retries - 1:
+                    time.sleep(1.5 ** attempt)
+                    continue
+                return None, e
+            except Exception as e:
+                if attempt < retries - 1:
+                    time.sleep(1.5 ** attempt)
+                    continue
+                return None, e
+        return None, Exception("max retries exceeded")
 
     query = city.strip()
     if not query:
         return "error: no city provided"
 
     geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(query)}&count=10"
-    try:
-        with urllib.request.urlopen(geo_url, timeout=10) as resp:
-            geo = json.loads(resp.read())
-    except Exception as e:
-        return f"error: geocoding failed for '{city}': {e}"
+    geo, err = _fetch_json(geo_url)
+    if err:
+        return f"error: geocoding failed for '{city}': {err}"
 
     results = geo.get("results")
     if not results:
@@ -56,11 +72,9 @@ def weather_fetch(city: str) -> str:
         f"latitude={lat}&longitude={lon}"
         f"&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m"
     )
-    try:
-        with urllib.request.urlopen(weather_url, timeout=10) as resp:
-            data = json.loads(resp.read())
-    except Exception as e:
-        return f"error: weather fetch failed for '{city}': {e}"
+    data, err = _fetch_json(weather_url)
+    if err:
+        return f"error: weather fetch failed for '{city}': {err}"
 
     current = data.get("current", {})
     temp = current.get("temperature_2m")
