@@ -8,7 +8,7 @@ HF Spaces SDK detection and the ZeroGPU startup check.
 import os
 
 # Ensure OPENAI_API_KEY is set before any imports touch the openai client.
-_key = os.getenv("OPENROUTER_API_KEY", "")
+_key = os.getenv("HF_TOKEN", "")
 if _key and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = _key
 
