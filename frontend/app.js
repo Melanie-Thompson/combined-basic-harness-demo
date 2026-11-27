@@ -1230,7 +1230,11 @@ function renderBenchmarkResults(data) {
                     ${faithBadge}
                     ${b.error ? `<span class="bench-baseline-error">${esc(b.error)}</span>` : ''}
                   </div>
-                  ${b.response_text ? `<div class="bench-baseline-text bench-baseline-collapsed" onclick="this.classList.toggle('bench-baseline-collapsed');this.classList.toggle('bench-baseline-expanded')">${esc(b.response_text)}</div>` : ''}
+                  ${b.response_text ? `
+                    <details class="bench-baseline-details">
+                      <summary class="bench-baseline-summary">${esc(b.response_text.substring(0, 120))}${b.response_text.length > 120 ? '…' : ''}</summary>
+                      <div class="bench-baseline-full">${esc(b.response_text)}</div>
+                    </details>` : ''}
                 `;
               }).join('')}
             </div>

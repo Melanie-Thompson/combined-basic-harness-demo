@@ -1512,30 +1512,27 @@ input.dev-otp-code {
   color: var(--bench-fail);
 }
 
-.bench-baseline-text {
+.bench-baseline-details {
+  margin: 2px 0 4px 108px;
+}
+.bench-baseline-summary {
   font-size: 9px;
   color: var(--text-dim);
-  margin: 2px 0 4px 108px;
   line-height: 1.3;
   opacity: 0.8;
   cursor: pointer;
-  white-space: pre-wrap;
-  word-break: break-word;
+  list-style: none;
 }
-.bench-baseline-text.bench-baseline-collapsed {
-  max-height: 2.6em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-.bench-baseline-text.bench-baseline-expanded {
-  max-height: none;
+.bench-baseline-summary::-webkit-details-marker { display: none; }
+.bench-baseline-summary::marker { display: none; content: ""; }
+.bench-baseline-full {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
   background: var(--bg-secondary, #1a1a2e);
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-radius: 4px;
   margin-top: 4px;
-  font-size: 10px;
-  opacity: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
