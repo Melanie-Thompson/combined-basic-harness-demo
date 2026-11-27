@@ -66,6 +66,8 @@ def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
         key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
+        log.info("LLM init: model=%s base_url=%s key=%s...%s",
+                 MODEL, BASE_URL, key[:8], key[-4:] if len(key) > 12 else "***")
         _llm = ChatOpenAI(
             model=MODEL,
             base_url=BASE_URL,
