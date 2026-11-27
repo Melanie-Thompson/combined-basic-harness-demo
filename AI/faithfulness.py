@@ -16,9 +16,7 @@ from typing import Callable
 
 from dateutil import parser as dtparser
 
-import numpy as np
-
-from AI.embeddings import embed, semantic_similarity
+from AI.embeddings import semantic_similarity
 from AI.models.message import FaithfulnessResult, ToolExecutionRecord
 from AI.tools import TOOL_SCHEMAS, Extractor
 
@@ -150,81 +148,24 @@ _CHECKERS: dict[str, Callable[[str, str], bool]] = {
 }
 
 
-FOLLOW_UP_RATIO = 1.75
-
-
 def _tda_follow_up(
     user_message: str,
     history: list | None,
     tool_descriptions: dict[str, str],
 ) -> bool:
-    """Use persistent homology to detect if a message is a follow-up to a
-    tool-relevant conversation cluster.
+    """Delegate to ContextManager's TDA clustering to detect follow-ups.
 
-    Embeds recent conversation plus the query, builds a Rips complex, and
-    uses the persistence diagram to determine whether the query joins the
-    tool-relevant cluster at a topologically natural scale.
-
-    The key metric: how far the query is from the tool cluster, relative to
-    the cluster's own internal scale (its longest persistence in H0). This
-    is what persistent homology measures — features relative to the ambient
-    noise. If the ratio is below FOLLOW_UP_RATIO, the query is part of the
-    conversation's topological structure, not an outlier.
+    Uses the full conversation history (no arbitrary window). The
+    ContextManager builds a Rips complex, finds the natural clustering
+    scale via the persistence diagram, and checks if the query falls
+    within a tool-relevant cluster.
     """
     if not history:
         return False
-
-    tool_indices = []
-    recent_texts = []
-    for msg in history[-10:]:
-        content = msg.content if hasattr(msg, "content") else str(msg)
-        if not isinstance(content, str):
-            content = str(content)
-        recent_texts.append(content)
-        for desc in tool_descriptions.values():
-            if semantic_similarity(content, desc) >= RELEVANCE_THRESHOLD:
-                tool_indices.append(len(recent_texts) - 1)
-                break
-
-    if not tool_indices:
-        return False
-
-    all_texts = recent_texts + [user_message]
-    query_idx = len(all_texts) - 1
-    vecs = embed(all_texts)
-
     try:
-        import gudhi
-        from scipy.spatial.distance import pdist, squareform
-
-        dist_matrix = squareform(pdist(vecs))
-        query_to_tool = min(dist_matrix[query_idx][i] for i in tool_indices)
-
-        # Build Rips complex on ONLY the history points (excluding query)
-        # to find the conversation's natural topological scale.
-        history_vecs = vecs[:len(recent_texts)]
-        rips = gudhi.RipsComplex(points=history_vecs, max_edge_length=2.0)
-        st = rips.create_simplex_tree(max_dimension=1)
-        dgm = st.persistence()
-
-        # H0 deaths = scales at which components merge. The max death
-        # is the conversation's natural diameter.
-        deaths = sorted(
-            d for dim, (b, d) in dgm if dim == 0 and d != float("inf")
-        )
-        cluster_scale = max(deaths) if deaths else 0.0
-
-        if cluster_scale < 1e-6:
-            return False
-
-        ratio = query_to_tool / cluster_scale
-        connected = ratio <= FOLLOW_UP_RATIO
-
-        log.info(
-            "TDA follow-up: query_dist=%.3f, cluster_scale=%.3f, ratio=%.3f (threshold=%.1f), connected=%s",
-            query_to_tool, cluster_scale, ratio, FOLLOW_UP_RATIO, connected,
-        )
-        return connected
+        from AI.context import ContextManager
+        ctx = ContextManager(session_id="relevance_check")
+        return ctx.is_follow_up(user_message, history, tool_descriptions)
     except Exception as exc:
         log.warning("TDA follow-up check failed: %s", exc)
         return False
@@ -253,6 +194,7 @@ def check_relevance(
 
     mismatches: list[str] = []
     relevant_count = 0
+    max_score = 0.0
 
     for name in tool_names:
         desc = (tool_descriptions.get(name) or "").strip()
@@ -263,6 +205,7 @@ def check_relevance(
         desc_score = semantic_similarity(user_message, desc)
         name_score = semantic_similarity(user_message, name.replace("_", " "))
         score = max(desc_score, name_score)
+        max_score = max(max_score, score)
         log.info(
             "relevance: '%s' vs tool '%s' -> %.3f (desc=%.3f, name=%.3f, threshold %.2f)",
             user_message[:60],
@@ -283,9 +226,22 @@ def check_relevance(
     if allow_chained_helpers and len(tool_names) > 1 and relevant_count >= 1:
         return True, []
 
+    # Stage 2: TDA follow-up — only for context-dependent queries.
+    # A human gauges relevance first, then checks conversation context
+    # only if the query is ambiguous (needs context to interpret).
+    # Deictic/anaphoric markers signal context-dependence.
     if mismatches and history:
-        if _tda_follow_up(user_message, history, tool_descriptions):
-            log.info("TDA context: follow-up detected, overriding relevance block")
+        lower = user_message.strip().lower()
+        context_markers = (
+            lower.startswith(("what about", "how about", "and ", "also ",
+                              "what's ", "hows ", "how's "))
+            or lower in ("there", "that one", "same")
+            or lower.endswith("?") and len(lower.split()) <= 4
+            or lower.rstrip("?") in ("there", "tomorrow", "today", "yesterday",
+                                     "this week", "next week")
+        )
+        if context_markers and _tda_follow_up(user_message, history, tool_descriptions):
+            log.info("TDA context: follow-up detected (marker in '%s'), overriding relevance block", lower[:30])
             return True, []
 
     return len(mismatches) == 0, mismatches

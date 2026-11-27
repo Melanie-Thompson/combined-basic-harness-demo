@@ -81,6 +81,83 @@ class ContextManager:
         )
         return selected
 
+    def is_follow_up(
+        self,
+        query: str,
+        history: list[BaseMessage],
+        tool_descriptions: dict[str, str],
+    ) -> bool:
+        """Check if query is a topological follow-up to a tool-relevant cluster.
+
+        Only tool-relevant messages enter the TDA. Builds a Rips complex on
+        their embeddings to find the natural clustering scale via the
+        persistence diagram, then checks if the query falls within that
+        topological structure.
+        """
+        from AI.embeddings import semantic_similarity
+
+        if not history:
+            return False
+
+        tool_texts = []
+        for msg in history:
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            for desc in tool_descriptions.values():
+                if semantic_similarity(content, desc) >= 0.25:
+                    tool_texts.append(content)
+                    break
+
+        if not tool_texts:
+            return False
+
+        tool_vecs = embed(tool_texts)
+        query_vec = embed([query])[0]
+
+        # Build Rips complex on tool-relevant messages only.
+        # Use the persistence diagram to find the natural scale — the
+        # largest gap separates the tight core from outliers.
+        rips = gudhi.RipsComplex(points=tool_vecs, max_edge_length=2.0)
+        st = rips.create_simplex_tree(max_dimension=1)
+        dgm = st.persistence()
+
+        deaths = sorted(
+            d for dim, (b, d) in dgm if dim == 0 and d != float("inf")
+        )
+
+        if not deaths:
+            cluster_scale = 0.0
+        elif len(deaths) == 1:
+            cluster_scale = deaths[0]
+        else:
+            best_gap = 0.0
+            epsilon = deaths[-1]
+            for i in range(len(deaths) - 1):
+                gap = deaths[i + 1] - deaths[i]
+                if gap > best_gap:
+                    best_gap = gap
+                    epsilon = deaths[i]
+            cluster_scale = epsilon if best_gap > 1e-6 else deaths[len(deaths) // 2]
+
+        if cluster_scale < 1e-6:
+            cos = float(np.dot(tool_vecs[0], query_vec) / (
+                np.linalg.norm(tool_vecs[0]) * np.linalg.norm(query_vec) + 1e-9
+            ))
+            connected = cos >= 0.3
+            log.info("TDA follow-up: single-point, cosine=%.3f, connected=%s", cos, connected)
+            return connected
+
+        from scipy.spatial.distance import cdist
+        dists_to_tools = cdist([query_vec], tool_vecs, metric="euclidean")[0]
+        min_dist = float(min(dists_to_tools))
+        ratio = min_dist / cluster_scale
+
+        connected = ratio <= 1.75
+        log.info(
+            "TDA follow-up: min_dist=%.3f, cluster_scale=%.3f, ratio=%.3f, connected=%s",
+            min_dist, cluster_scale, ratio, connected,
+        )
+        return connected
+
     def _cluster(self, embeddings: np.ndarray) -> list[list[int]]:
         n = len(embeddings)
         if n <= 1:
