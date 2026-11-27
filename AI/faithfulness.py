@@ -23,7 +23,7 @@ from AI.tools import TOOL_SCHEMAS, Extractor
 log = logging.getLogger("faithfulness")
 
 SEMANTIC_THRESHOLD = 0.4
-RELEVANCE_THRESHOLD = 0.15
+RELEVANCE_THRESHOLD = 0.25
 
 # Default rounding tolerance allows natural LLM rounding (e.g., 11.4 -> 11)
 DEFAULT_NUMERIC_ABS_TOL = 0.5
@@ -173,12 +173,16 @@ def check_relevance(
             mismatches.append(f"tool '{name}' has no description — cannot verify relevance")
             continue
 
-        score = semantic_similarity(user_message, desc)
+        desc_score = semantic_similarity(user_message, desc)
+        name_score = semantic_similarity(user_message, name.replace("_", " "))
+        score = max(desc_score, name_score)
         log.info(
-            "relevance: '%s' vs tool '%s' desc -> %.3f (threshold %.2f)",
+            "relevance: '%s' vs tool '%s' -> %.3f (desc=%.3f, name=%.3f, threshold %.2f)",
             user_message[:60],
             name,
             score,
+            desc_score,
+            name_score,
             RELEVANCE_THRESHOLD,
         )
         if score >= RELEVANCE_THRESHOLD:
