@@ -79,5 +79,7 @@ def weather_fetch(city: str) -> str:
     }
     condition = conditions.get(code, f"code {code}")
 
+    pop = best.get("population")
     location = f"{name}, {country}" if country else name
-    return f"Weather in {location}: {temp}°C, {condition}, humidity {humidity}%, wind {wind} km/h"
+    pop_str = f" (population {pop:,})" if pop else " (population unknown)"
+    return f"Weather in {location}{pop_str}: {temp}°C, {condition}, humidity {humidity}%, wind {wind} km/h"
