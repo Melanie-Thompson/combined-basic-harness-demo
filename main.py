@@ -325,7 +325,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
         async def _run_baseline_bg(prompt, tool_out, result_obj):
             try:
                 from AI.graph import MODEL as AGENT_MODEL
-                baseline = await run_inline_baseline(prompt, AGENT_MODEL)
+                baseline = await run_inline_baseline(prompt, AGENT_MODEL, registry=_registry)
                 bd = baseline.to_dict()
                 if tool_out.strip() and bd["response_text"].strip():
                     bd["faithfulness_score"] = round(

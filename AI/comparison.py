@@ -1,15 +1,11 @@
-"""Run the same prompt through raw LLM baselines (no tools, no agent pipeline)
-to compare against the tool-grounded agent response.
+"""Raw LLM + tools baseline — same model, same tools, no harness guardrails.
 
-The inline baseline uses the SAME model the agent uses but without
-the tool pipeline — just a direct question. This shows whether the agent's
-tool grounding adds value over raw parametric knowledge.
-
-A background sweep across all available models runs asynchronously and
-attaches results when they're ready.
+The baseline uses the SAME model and SAME tools as the agent but without
+the harness pipeline (no faithfulness checks, no relevance gates, no
+interstitial checks, no signing). This tests whether the harness adds
+value over a naked tool-calling LLM.
 """
 
-import asyncio
 import logging
 import os
 import time
@@ -21,10 +17,7 @@ import httpx
 log = logging.getLogger("comparison")
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-BASELINE_SYSTEM = (
-    "Answer the user's question directly and concisely. "
-    "If you don't know the answer, say so."
-)
+MAX_TOOL_ROUNDS = 3
 
 
 @dataclass
@@ -43,72 +36,107 @@ class BaselineResult:
         }
 
 
-async def _query_model(model: str, prompt: str, timeout: int = 30) -> BaselineResult:
-    """Query a single model via OpenAI-compatible endpoint."""
+def _build_tool_schemas(registry) -> list[dict]:
+    """Convert registry tool definitions to OpenAI function-calling format."""
+    if not registry:
+        return []
+    schemas = []
+    for defn in registry.all_tools:
+        if defn.kind == "gate":
+            continue
+        schemas.append({
+            "type": "function",
+            "function": {
+                "name": defn.name,
+                "description": defn.description,
+                "parameters": defn.inputSchema,
+            },
+        })
+    return schemas
+
+
+def _exec_tool(func_name: str, args: dict, registry) -> str:
+    """Execute a tool from registry source code (same as sandbox direct path)."""
+    defn = registry.tools_by_name.get(func_name)
+    if not defn or not defn.source_code:
+        return f"error: tool '{func_name}' not found"
+    try:
+        namespace: dict = {}
+        exec(compile(defn.source_code, f"<baseline:{func_name}>", "exec"), namespace)  # noqa: S102
+        fn = namespace.get(func_name)
+        if fn is None:
+            available = [k for k in namespace if callable(namespace[k]) and not k.startswith("_")]
+            fn = namespace[available[0]] if len(available) == 1 else None
+        if fn is None:
+            return f"error: no callable found in '{func_name}'"
+        return str(fn(**args))
+    except Exception as e:
+        return f"error: {e}"
+
+
+async def run_inline_baseline(
+    prompt: str, agent_model: str, registry=None,
+) -> BaselineResult:
+    """Same model + same tools, raw tool-calling loop, no harness."""
+    import json
+
     api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+    tools = _build_tool_schemas(registry)
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant. Use the provided tools to answer questions."},
+        {"role": "user", "content": prompt},
+    ]
+
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{LLM_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": BASELINE_SYSTEM},
-                        {"role": "user", "content": prompt},
-                    ],
+        async with httpx.AsyncClient(timeout=60) as client:
+            for _ in range(MAX_TOOL_ROUNDS):
+                body: dict[str, Any] = {
+                    "model": agent_model,
+                    "messages": messages,
                     "temperature": 0.2,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = data["choices"][0]["message"]["content"]
+                }
+                if tools:
+                    body["tools"] = tools
+
+                resp = await client.post(
+                    f"{LLM_BASE_URL}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                choice = data["choices"][0]
+                msg = choice["message"]
+
+                tool_calls = msg.get("tool_calls")
+                if not tool_calls:
+                    text = msg.get("content", "")
+                    latency = (time.monotonic() - start) * 1000
+                    return BaselineResult(model=agent_model, response_text=text, latency_ms=latency)
+
+                messages.append(msg)
+                for tc in tool_calls:
+                    fn_name = tc["function"]["name"]
+                    try:
+                        fn_args = json.loads(tc["function"]["arguments"])
+                    except (json.JSONDecodeError, KeyError):
+                        fn_args = {}
+                    result = _exec_tool(fn_name, fn_args, registry)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+
             latency = (time.monotonic() - start) * 1000
-            return BaselineResult(model=model, response_text=text, latency_ms=latency)
+            return BaselineResult(model=agent_model, response_text="(max rounds reached)", latency_ms=latency)
+
     except Exception as e:
         latency = (time.monotonic() - start) * 1000
-        return BaselineResult(model=model, response_text="", latency_ms=latency, error=str(e))
+        return BaselineResult(model=agent_model, response_text="", latency_ms=latency, error=str(e))
 
 
-async def run_inline_baseline(prompt: str, agent_model: str) -> BaselineResult:
-    """Run one fast baseline using the agent's own model (already loaded in Ollama).
-
-    This is the inline comparison — same model, no tools. Fast because
-    the model weights are already resident.
-    """
-    return await _query_model(agent_model, prompt, timeout=30)
-
-
-async def _list_models() -> list[str]:
-    """Get available models. Returns empty if no local Ollama running."""
-    ollama_base = os.getenv("OLLAMA_BASE", "http://localhost:11434")
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{ollama_base}/api/tags")
-            resp.raise_for_status()
-            return [m["name"] for m in resp.json().get("models", [])]
-    except Exception:
-        return []
-
-
-async def run_all_baselines(prompt: str) -> list[BaselineResult]:
-    """Run the prompt through ALL available models in parallel.
-
-    This can be slow (Ollama serialises inference across models), so it
-    should only be used as a background task, not inline.
-    """
-    models = await _list_models()
-    if not models:
-        return []
-
-    tasks = [_query_model(m, prompt, timeout=120) for m in models]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    out: list[BaselineResult] = []
-    for r in results:
-        if isinstance(r, BaselineResult):
-            out.append(r)
-        elif isinstance(r, Exception):
-            log.warning("baseline query failed: %s", r)
-    return out
+async def run_all_baselines(prompt: str, registry=None) -> list[BaselineResult]:
+    """Placeholder — extend with multiple models if needed."""
+    return []
