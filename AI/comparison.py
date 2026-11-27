@@ -17,7 +17,7 @@ import httpx
 log = logging.getLogger("comparison")
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
-MAX_TOOL_ROUNDS = 3
+MAX_TOOL_ROUNDS = 5
 
 
 @dataclass
@@ -90,13 +90,13 @@ async def run_inline_baseline(
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            for _ in range(MAX_TOOL_ROUNDS):
+            for round_num in range(MAX_TOOL_ROUNDS):
                 body: dict[str, Any] = {
                     "model": agent_model,
                     "messages": messages,
                     "temperature": 0.2,
                 }
-                if tools:
+                if tools and round_num < MAX_TOOL_ROUNDS - 1:
                     body["tools"] = tools
 
                 resp = await client.post(
