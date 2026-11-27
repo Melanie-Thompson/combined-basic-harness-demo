@@ -226,22 +226,13 @@ def check_relevance(
     if allow_chained_helpers and len(tool_names) > 1 and relevant_count >= 1:
         return True, []
 
-    # Stage 2: TDA follow-up — only for context-dependent queries.
-    # A human gauges relevance first, then checks conversation context
-    # only if the query is ambiguous (needs context to interpret).
-    # Deictic/anaphoric markers signal context-dependence.
+    # Stage 2: TDA follow-up — if direct relevance failed but there's
+    # conversation history, check if the query is topologically close to
+    # a tool-relevant cluster. The TDA only considers tool-relevant
+    # messages so off-topic queries won't match even with history.
     if mismatches and history:
-        lower = user_message.strip().lower()
-        context_markers = (
-            lower.startswith(("what about", "how about", "and ", "also ",
-                              "what's ", "hows ", "how's "))
-            or lower in ("there", "that one", "same")
-            or lower.endswith("?") and len(lower.split()) <= 4
-            or lower.rstrip("?") in ("there", "tomorrow", "today", "yesterday",
-                                     "this week", "next week")
-        )
-        if context_markers and _tda_follow_up(user_message, history, tool_descriptions):
-            log.info("TDA context: follow-up detected (marker in '%s'), overriding relevance block", lower[:30])
+        if _tda_follow_up(user_message, history, tool_descriptions):
+            log.info("TDA context: follow-up detected for '%s', overriding relevance block", user_message[:40])
             return True, []
 
     return len(mismatches) == 0, mismatches
