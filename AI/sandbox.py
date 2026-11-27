@@ -20,8 +20,7 @@ from AI.signing import canonicalize_args, sign_execution
 
 log = logging.getLogger("sandbox")
 
-_port = os.getenv("PORT", "8000")
-API_SERVER = os.getenv("API_SERVER", f"http://localhost:{_port}/api")
+API_SERVER = os.getenv("API_SERVER", "http://localhost:7860/api")
 MAX_TOOL_OUTPUT = 4_000
 
 
@@ -47,7 +46,27 @@ class SandboxSession:
         return self._client
 
     async def call(self, func_name: str, **kwargs) -> tuple[str, list[dict]]:
-        """Execute a tool by calling the API server. Returns (result, effects)."""
+        """Execute a tool — direct call if bundled API available, else HTTP."""
+        try:
+            from main_api import execute_tool, ExecuteRequest
+            req = ExecuteRequest(
+                args=kwargs,
+                session_id=self._session_id or "default",
+                user_message=self._user_message or "",
+            )
+            data = await execute_tool(func_name, req)
+            if isinstance(data, dict):
+                effects = data.get("effects", [])
+                if "error" in data:
+                    return f"error: {data['error']}", effects
+                result = data.get("result", "(no output)")
+                if len(result) > MAX_TOOL_OUTPUT:
+                    result = result[:MAX_TOOL_OUTPUT] + f"\n…[truncated {len(result) - MAX_TOOL_OUTPUT} chars]"
+                return result, effects
+            return str(data), []
+        except ImportError:
+            pass
+
         client = await self._get_client()
         try:
             payload: dict = {"args": kwargs}
