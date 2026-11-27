@@ -270,7 +270,7 @@ async def stream_reply(
             # Pre-execution relevance gate: block before calling the API
             tool_descs = {d.name: d.description for d in (registry.all_tools if registry else [])}
             selected_tools = [call["name"] for call in full.tool_calls]
-            relevant, rel_mismatches = check_relevance(message, selected_tools, tool_descs)
+            relevant, rel_mismatches = check_relevance(message, selected_tools, tool_descs, history=managed_history)
             log.info("pre-exec relevance: relevant=%s, mismatches=%s", relevant, rel_mismatches)
             if not relevant:
                 tool_names = [d.name for d in (registry.all_tools if registry else [])]

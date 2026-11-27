@@ -16,7 +16,9 @@ from typing import Callable
 
 from dateutil import parser as dtparser
 
-from AI.embeddings import semantic_similarity
+import numpy as np
+
+from AI.embeddings import embed, semantic_similarity
 from AI.models.message import FaithfulnessResult, ToolExecutionRecord
 from AI.tools import TOOL_SCHEMAS, Extractor
 
@@ -148,11 +150,92 @@ _CHECKERS: dict[str, Callable[[str, str], bool]] = {
 }
 
 
+FOLLOW_UP_RATIO = 1.75
+
+
+def _tda_follow_up(
+    user_message: str,
+    history: list | None,
+    tool_descriptions: dict[str, str],
+) -> bool:
+    """Use persistent homology to detect if a message is a follow-up to a
+    tool-relevant conversation cluster.
+
+    Embeds recent conversation plus the query, builds a Rips complex, and
+    uses the persistence diagram to determine whether the query joins the
+    tool-relevant cluster at a topologically natural scale.
+
+    The key metric: how far the query is from the tool cluster, relative to
+    the cluster's own internal scale (its longest persistence in H0). This
+    is what persistent homology measures — features relative to the ambient
+    noise. If the ratio is below FOLLOW_UP_RATIO, the query is part of the
+    conversation's topological structure, not an outlier.
+    """
+    if not history:
+        return False
+
+    tool_indices = []
+    recent_texts = []
+    for msg in history[-10:]:
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        if not isinstance(content, str):
+            content = str(content)
+        recent_texts.append(content)
+        for desc in tool_descriptions.values():
+            if semantic_similarity(content, desc) >= RELEVANCE_THRESHOLD:
+                tool_indices.append(len(recent_texts) - 1)
+                break
+
+    if not tool_indices:
+        return False
+
+    all_texts = recent_texts + [user_message]
+    query_idx = len(all_texts) - 1
+    vecs = embed(all_texts)
+
+    try:
+        import gudhi
+        from scipy.spatial.distance import pdist, squareform
+
+        dist_matrix = squareform(pdist(vecs))
+        query_to_tool = min(dist_matrix[query_idx][i] for i in tool_indices)
+
+        # Build Rips complex on ONLY the history points (excluding query)
+        # to find the conversation's natural topological scale.
+        history_vecs = vecs[:len(recent_texts)]
+        rips = gudhi.RipsComplex(points=history_vecs, max_edge_length=2.0)
+        st = rips.create_simplex_tree(max_dimension=1)
+        dgm = st.persistence()
+
+        # H0 deaths = scales at which components merge. The max death
+        # is the conversation's natural diameter.
+        deaths = sorted(
+            d for dim, (b, d) in dgm if dim == 0 and d != float("inf")
+        )
+        cluster_scale = max(deaths) if deaths else 0.0
+
+        if cluster_scale < 1e-6:
+            return False
+
+        ratio = query_to_tool / cluster_scale
+        connected = ratio <= FOLLOW_UP_RATIO
+
+        log.info(
+            "TDA follow-up: query_dist=%.3f, cluster_scale=%.3f, ratio=%.3f (threshold=%.1f), connected=%s",
+            query_to_tool, cluster_scale, ratio, FOLLOW_UP_RATIO, connected,
+        )
+        return connected
+    except Exception as exc:
+        log.warning("TDA follow-up check failed: %s", exc)
+        return False
+
+
 def check_relevance(
     user_message: str,
     tool_names: list[str],
     tool_descriptions: dict[str, str],
     allow_chained_helpers: bool = True,
+    history: list | None = None,
 ) -> tuple[bool, list[str]]:
     """Verify selected tools against the user's question using tool descriptions.
 
@@ -160,6 +243,10 @@ def check_relevance(
     trajectory (e.g., `geocode` -> `weather_fetch`), relevance passes if at least
     the primary/terminal tool aligns with the user's question so intermediate
     lookup helpers are not falsely blocked.
+
+    When `history` is provided and the direct similarity check fails, uses TDA
+    persistent homology to detect if the message is a follow-up to a recent
+    tool-relevant conversation cluster.
     """
     if not tool_names or not user_message or not user_message.strip():
         return True, []
@@ -195,6 +282,11 @@ def check_relevance(
 
     if allow_chained_helpers and len(tool_names) > 1 and relevant_count >= 1:
         return True, []
+
+    if mismatches and history:
+        if _tda_follow_up(user_message, history, tool_descriptions):
+            log.info("TDA context: follow-up detected, overriding relevance block")
+            return True, []
 
     return len(mismatches) == 0, mismatches
 

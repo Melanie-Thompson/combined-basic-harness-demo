@@ -277,7 +277,8 @@ def _make_relevance_node(registry):
         tool_descs = {d.name: d.description for d in (registry.all_tools if registry else [])}
         selected = [c["name"] for c in pending]
         user_msg = state.get("user_message", "")
-        relevant, mismatches = check_relevance(user_msg, selected, tool_descs)
+        history = state.get("messages", [])
+        relevant, mismatches = check_relevance(user_msg, selected, tool_descs, history=history)
         log.info("pre-exec relevance: relevant=%s, mismatches=%s", relevant, mismatches)
 
         if not relevant:
