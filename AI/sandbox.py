@@ -46,26 +46,26 @@ class SandboxSession:
         return self._client
 
     async def call(self, func_name: str, **kwargs) -> tuple[str, list[dict]]:
-        """Execute a tool — direct call if bundled API available, else HTTP."""
-        try:
-            from main_api import execute_tool, ExecuteRequest
-            req = ExecuteRequest(
-                args=kwargs,
-                session_id=self._session_id or "default",
-                user_message=self._user_message or "",
-            )
-            data = await execute_tool(func_name, req)
-            if isinstance(data, dict):
-                effects = data.get("effects", [])
-                if "error" in data:
-                    return f"error: {data['error']}", effects
-                result = data.get("result", "(no output)")
-                if len(result) > MAX_TOOL_OUTPUT:
-                    result = result[:MAX_TOOL_OUTPUT] + f"\n…[truncated {len(result) - MAX_TOOL_OUTPUT} chars]"
-                return result, effects
-            return str(data), []
-        except ImportError:
-            pass
+        """Execute a tool from registry source code, falling back to HTTP."""
+        if self._registry:
+            defn = self._registry.tools_by_name.get(func_name)
+            if defn and defn.source_code:
+                try:
+                    namespace: dict = {}
+                    exec(compile(defn.source_code, f"<package:{func_name}>", "exec"), namespace)  # noqa: S102
+                    fn = namespace.get(func_name)
+                    if fn is None:
+                        available = [k for k in namespace if callable(namespace[k]) and not k.startswith("_")]
+                        fn = namespace[available[0]] if len(available) == 1 else None
+                    if fn is not None:
+                        result = str(fn(**kwargs))
+                        if len(result) > MAX_TOOL_OUTPUT:
+                            result = result[:MAX_TOOL_OUTPUT] + f"\n…[truncated {len(result) - MAX_TOOL_OUTPUT} chars]"
+                        return result, []
+                    log.warning("no callable found in source for %s", func_name)
+                except Exception as exc:
+                    log.warning("direct exec failed for %s: %s", func_name, exc)
+                    return f"error: {exc}", []
 
         client = await self._get_client()
         try:
