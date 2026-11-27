@@ -82,4 +82,17 @@ def weather_fetch(city: str) -> str:
     pop = best.get("population")
     location = f"{name}, {country}" if country else name
     pop_str = f" (population {pop:,})" if pop else " (population unknown)"
-    return f"Weather in {location}{pop_str}: {temp}°C, {condition}, humidity {humidity}%, wind {wind} km/h"
+    weather = f"Weather in {location}{pop_str}: {temp}°C, {condition}, humidity {humidity}%, wind {wind} km/h"
+
+    if (not pop or pop < 10_000) and query.lower() != name.lower():
+        weather += (
+            f"\nNote: '{city}' matched a small/obscure place called {name}, {country}."
+            f" The user may have meant something else — confirm before presenting this as their answer."
+        )
+    elif not pop or pop < 10_000:
+        weather += (
+            f"\nNote: {name} is a very small or obscure place."
+            f" If the user likely meant something other than this location, say so."
+        )
+
+    return weather

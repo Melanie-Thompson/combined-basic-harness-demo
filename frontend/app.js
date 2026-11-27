@@ -461,7 +461,6 @@ const EVENT_HANDLERS = {
     hideThinking();
     if (!_streamingEl) {
       _streamingEl = appendMessage("assistant", "");
-      return;
     }
     const wasNearBottom = shouldAutoScroll();
     _streamingEl.textContent += d.token;
