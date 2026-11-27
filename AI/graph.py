@@ -39,8 +39,8 @@ from AI.sandbox import SandboxSession, make_tools
 
 log = logging.getLogger("graph")
 
-MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-72B-Instruct")
-BASE_URL = os.getenv("LLM_BASE_URL", "https://router.huggingface.co/v1")
+MODEL = os.getenv("LLM_MODEL", "google/gemma-4-31b-it:free")
+BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 MAX_TOOL_ROUNDS = 5
 MAX_FAITHFULNESS_RETRIES = 2
 
@@ -65,7 +65,7 @@ _llm: ChatOpenAI | None = None
 def _get_llm() -> ChatOpenAI:
     global _llm
     if _llm is None:
-        key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
+        key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
         log.info("LLM init: model=%s base_url=%s key=%s...%s",
                  MODEL, BASE_URL, key[:8], key[-4:] if len(key) > 12 else "***")
         _llm = ChatOpenAI(
@@ -151,7 +151,7 @@ def _make_plan_node(llm_forced, llm_auto, tools_by_name: dict):
     """Create the plan node — LLM decides which tool to call (or responds)."""
 
     # LLM with no tools — forces a text response for the summarise step
-    key = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
+    key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "sk-no-key-set"
     llm_no_tools = ChatOpenAI(
         model=MODEL, base_url=BASE_URL, api_key=key,
         temperature=0.2, timeout=120, max_retries=1,

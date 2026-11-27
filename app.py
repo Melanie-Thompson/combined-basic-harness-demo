@@ -7,10 +7,8 @@ HF Spaces SDK detection and the ZeroGPU startup check.
 
 import os
 
-# Ensure OPENAI_API_KEY is set from HF_TOKEN before any imports
-# touch the openai client. The openai 3.x library checks this env var
-# during client init even when api_key is passed explicitly.
-_key = os.getenv("HF_TOKEN", "")
+# Ensure OPENAI_API_KEY is set before any imports touch the openai client.
+_key = os.getenv("OPENROUTER_API_KEY", "")
 if _key and not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = _key
 
