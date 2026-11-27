@@ -11,6 +11,7 @@ attaches results when they're ready.
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -19,7 +20,7 @@ import httpx
 
 log = logging.getLogger("comparison")
 
-OLLAMA_BASE = "http://localhost:11434"
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
 BASELINE_SYSTEM = (
     "Answer the user's question directly and concisely. "
     "If you don't know the answer, say so."
@@ -43,12 +44,14 @@ class BaselineResult:
 
 
 async def _query_model(model: str, prompt: str, timeout: int = 30) -> BaselineResult:
-    """Query a single model via Ollama's OpenAI-compatible endpoint."""
+    """Query a single model via OpenAI-compatible endpoint."""
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
     start = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                f"{OLLAMA_BASE}/v1/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json={
                     "model": model,
                     "messages": [
@@ -78,14 +81,14 @@ async def run_inline_baseline(prompt: str, agent_model: str) -> BaselineResult:
 
 
 async def _list_models() -> list[str]:
-    """Get available Ollama models."""
+    """Get available models. Returns empty if no local Ollama running."""
+    ollama_base = os.getenv("OLLAMA_BASE", "http://localhost:11434")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            resp = await client.get(f"{ollama_base}/api/tags")
             resp.raise_for_status()
             return [m["name"] for m in resp.json().get("models", [])]
-    except Exception as e:
-        log.warning("failed to list Ollama models: %s", e)
+    except Exception:
         return []
 
 
